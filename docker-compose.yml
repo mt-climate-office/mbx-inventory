@@ -1,0 +1,26 @@
+
+version: '3.9'
+
+services:
+    nocodb:
+        container_name: nocodb
+        restart: always
+        image: nocodb/nocodb:latest
+        volumes:
+            - inventory_data:/usr/app/data/
+        ports:
+            - "8080:8080"
+
+    baserow:
+        container_name: baserow
+        restart: always
+        image: baserow/baserow:1.24.2
+        volumes:
+            - baserow_data:/baserow/data
+        ports:
+            - "80:80"
+            - "443:443"
+
+volumes:
+    inventory_data:
+    baserow_data:
