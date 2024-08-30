@@ -24,12 +24,14 @@ class Column:
 @dataclass
 class Table:
     table_name: str
-    init_columns: list[Column]
-    relational_columns: list[Column] = field(default_factory=list)
+    columns: list[Column]
+    relationships: list[Column] = field(default_factory=list)
+    lookups: list[Column] = field(default_factory=list)
+    formulas: list[Column] = field(default_factory=list)
     table_id: str | None = None
 
     def build_request_json(self) -> dict[str, Any]:
-        self.init_columns.append(
+        self.columns.append(
             Column(
                 "_id", "ID", extra={
                     "pk": True,
@@ -37,12 +39,40 @@ class Table:
                 }
             )
         )
-        cols = [x.as_dict() for x in self.init_columns]
+        cols = [x.as_dict() for x in self.columns]
         return {
             "table_name": self.table_name,
             "columns": cols
         }
 
+
+@dataclass
+class BaseSchema:
+    tables: list[Table]
+
+    def search_tables_for_relationship(self, table_name: str, column_name: str):
+        for table in self.tables:
+            if table.table_name == table_name:
+                break
+        for column in table.columns:
+            if column.column_name == column_name:
+                break
+        
+        if column_name != column.column_name:
+            raise ValueError(
+                f"Couldn't find a match for table {table_name} and column {column_name}."
+            )
+
+        return column.column_id
+
+    def match_relationship_column_ids(self):
+        for table in self.tables:
+            for relationship in table.relationships:
+                table, column = relationship.extra['childId']
+                relationship.extra['childId'] = self.search_tables_for_relationship(table, column)
+
+                table, column = relationship.extra['parentId']
+                relationship.extra['parentId'] = self.search_tables_for_relationship(table, column)
 
 # TODO: Make a table list class that is searchable so we can populate with column id's 
 # You need to create linked columns first before you link them, then link with their id.
@@ -50,7 +80,7 @@ class Table:
 tables = [
     Table(
         "Stations",
-        init_columns=[
+        columns=[
             Column("station", "SingleLineText"),
             Column("name", "SingleLineText"),
             Column("status", "MultiSelect"),
@@ -58,28 +88,30 @@ tables = [
             Column("location", "GeoData"),
             Column("elevation", "Number"),
             Column("extra", "JSON"),
-            Column("Deployments", "SingleLineText"),
-            Column("Maintenance", "SingleLineText"),
-            Column("Contacts", "SingleLineText"),
+            Column("deployments", "SingleLineText"),
+            Column("maintenance", "SingleLineText"),
+            Column("contacts", "SingleLineText"),
         ],
-        relational_columns=[
+        relationships=[
             Column(
-                "Contacts", "LinkToAnotherRecord",
+                "contacts", "LinkToAnotherRecord",
                 extra={
-                    "childId"
+                    "childId": ("Stations", "contacts"),
+                    "parentId": ("Contacts", "station"),
+                    "type": "hm"
                 }
             )
         ]
     ),
     Table(
         "Inventory",
-        init_columns=[
+        columns=[
             Column("serial_number", "SingleLineText")
         ]
     ),
     Table(
         "Deployments",
-        init_columns=[
+        columns=[
             Column("install_config", "JSON"),
             Column("date_assigned", "Date"),
             Column("date_start", "Date"),
@@ -88,7 +120,7 @@ tables = [
     ),
     Table(
         "Model Elements",
-        init_columns=[
+        columns=[
             Column("range_min", "Number"),
             Column("range_max", "Number"),
             Column("qc_units", "SingleLineText")
@@ -96,7 +128,7 @@ tables = [
     ),
     Table(
         "Models",
-        init_columns=[
+        columns=[
             Column("manufacturer", "MultiSelect"),
             Column("model", "SingleLineText"),
             Column("component_type", "MultiSelect"),
@@ -104,7 +136,7 @@ tables = [
     ),
     Table(
         "Elements",
-        init_columns=[
+        columns=[
             Column("element", "SingleLineText"),
             Column("description", "SingleLineText"),
             Column("extra", "JSON")
@@ -112,33 +144,33 @@ tables = [
     ),
     Table(
         "Measurements",
-        init_columns=[
+        columns=[
             Column("measurement", "SingleLineText"),
             Column("measured_units", "SingleLineText")
         ]
     ),
     Table(
         "Maintenance",
-        init_columns=[
-            Column("Created Date", "Date"),
-            Column("Visit Date", "Date"),
-            Column("End Date", "Date"),
-            Column("Task Description", "LongText"),
-            Column("Task Comments", "LongText"),
-            Column("Trip Type", "MultiSelect"),
-            Column("Status", "MultiSelect")
+        columns=[
+            Column("created_date", "Date"),
+            Column("visit_date", "Date"),
+            Column("end_date", "Date"),
+            Column("task_description", "LongText"),
+            Column("task_comments", "LongText"),
+            Column("trip_type", "MultiSelect"),
+            Column("status", "MultiSelect")
         ]
     ),
     Table(
         "Outages",
-        init_columns=[
+        columns=[
             Column("outage_start", "Date"),
             Column("outage_end", "Date")
         ]
     ),
     Table(
         "Contacts",
-        init_columns=[
+        columns=[
             Column("name_first", "SingleLineText"),
             Column("name_last", "SingleLineText"),
             Column("phone_number", "PhoneNumber"),

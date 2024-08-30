@@ -1,6 +1,6 @@
 import httpx
 import os
-from schemas import tables, Table
+from schemas import tables, Table, BaseSchema
 
 def check_resp_status_code(resp) -> httpx.Response:
     if resp.status_code != 200:
@@ -57,7 +57,14 @@ def create_base_tables(
         resp = check_resp_status_code(resp)
         resp_json = resp.json()
         table.table_id = resp_json['id']
-        # TODO: Populate with column ids here.
+
+        for column in table.columns:
+            _id = [x for x in resp_json['columns'] if x['column_name'] == column.column_name]
+            if len(_id) != 1:
+                raise ValueError(f"Incorrect number of columns matching {column.column_name}")
+            else:
+                _id = _id[0]
+            column.column_id = _id['id']
     
     return tables
 
@@ -70,9 +77,13 @@ def populate_table_relationships(
     pass
 
 # api_key = os.getenv("NOCO_TOKEN")
+api_key = "PeM67GqXJ7VbPW4RA2WSyZZnwfjfQNQ364_B02iy"
 base_id = create_mesonet_base(
     api_key=api_key,
     db_base_name = "Montana Mesonet"
 )
 
 tables = create_base_tables(base_id, api_key)
+base_schema = BaseSchema(tables)
+base_schema.match_relationship_column_ids()
+#TODO: Make API call to update relationships after calling
