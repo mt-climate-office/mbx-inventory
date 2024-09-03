@@ -44,38 +44,52 @@ class Table:
             "table_name": self.table_name,
             "columns": cols
         }
+    
+    def __getitem__(self, key):
+        for column in self.columns:
+            if column.column_name == key:
+                return column
+        raise KeyError(f"Column with name {key} is not present in {self.table_name}.")
+    
 
 
 @dataclass
 class BaseSchema:
     tables: list[Table]
 
-    def search_tables_for_relationship(self, table_name: str, column_name: str):
+    def __getitem__(self, key: str) -> Table:
+
         for table in self.tables:
-            if table.table_name == table_name:
-                break
-        for column in table.columns:
-            if column.column_name == column_name:
-                break
+            if table.table_name == key:
+                return table
         
-        if column_name != column.column_name:
-            raise ValueError(
-                f"Couldn't find a match for table {table_name} and column {column_name}."
-            )
+        raise KeyError(f"Table with name '{key}' is not in list of tables.")
 
-        return column.column_id
 
-    def match_relationship_column_ids(self):
+    # def search_tables_for_relationship(self, table_name: str, column_name: str) -> str:
+    #     for table in self.tables:
+    #         if table.table_name == table_name:
+    #             break
+    #     for column in table.columns:
+    #         if column.column_name == column_name:
+    #             break
+        
+    #     if column_name != column.column_name:
+    #         raise ValueError(
+    #             f"Couldn't find a match for table {table_name} and column {column_name}."
+    #         )
+
+    #     return column.column_id
+
+    def match_relationship_column_ids(self) -> None:
         for table in self.tables:
             for relationship in table.relationships:
-                table, column = relationship.extra['childId']
-                relationship.extra['childId'] = self.search_tables_for_relationship(table, column)
+                child = relationship.extra['childId']
+                relationship.extra['childId'] = self[child].table_id
+                relationship.extra['parentId'] = table.table_id
 
-                table, column = relationship.extra['parentId']
-                relationship.extra['parentId'] = self.search_tables_for_relationship(table, column)
+                
 
-# TODO: Make a table list class that is searchable so we can populate with column id's 
-# You need to create linked columns first before you link them, then link with their id.
 
 tables = [
     Table(
@@ -94,11 +108,11 @@ tables = [
         ],
         relationships=[
             Column(
-                "contacts", "LinkToAnotherRecord",
+                "contacts", "Links",
                 extra={
-                    "childId": ("Stations", "contacts"),
-                    "parentId": ("Contacts", "station"),
-                    "type": "hm"
+                    "childId": "Contacts",
+                    "type": "mm",
+                    "title": "contacts",
                 }
             )
         ]
@@ -178,5 +192,4 @@ tables = [
             Column("station", "SingleLineText"),
         ]
     )
-
 ]

@@ -70,14 +70,27 @@ def create_base_tables(
 
 
 def populate_table_relationships(
-        base_id: str,
+        base_schema: BaseSchema,
         api_key: str,
         nocodb_url: str="http://localhost:8080",
 ):
-    pass
+    for table in base_schema.tables:
+        for relationship in table.relationships:
+            resp = httpx.post(
+                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
+                headers={
+                    "xc-token": api_key,
+                    "Content-Type": "application/json"
+                },
+                json=relationship.as_dict()
+            )
+            resp = check_resp_status_code(resp)
+
+
+
 
 # api_key = os.getenv("NOCO_TOKEN")
-api_key = "PeM67GqXJ7VbPW4RA2WSyZZnwfjfQNQ364_B02iy"
+api_key = "IKdOi-7YgU64Ui4dvqcPytF1XGTgJGp6rswmn5mx"
 base_id = create_mesonet_base(
     api_key=api_key,
     db_base_name = "Montana Mesonet"
