@@ -88,31 +88,30 @@ tables = [
             Column("location", "GeoData"),
             Column("elevation", "Number"),
             Column("extra", "JSON"),
-            Column("maintenance", "SingleLineText"),
         ],
         relationships=[
             Column(
-                "contacts",
+                "Contacts",
                 "Links",
                 extra={
                     "childId": "Contacts",
                     "type": "mm",
-                    "title": "contacts",
+                    "title": "Contacts",
                 },
             ),
             Column(
-                "deployments",
+                "Deployments",
                 "Links",
                 extra={
                     "childId": "Deployments",
                     "type": "hm",
-                    "title": "deployments",
+                    "title": "Deployments",
                 },
             ),
             Column(
-                "maintenance",
+                "Maintenance",
                 "Links",
-                extra={"childId": "Maintenance", "type": "mm", "title": "maintenance"},
+                extra={"childId": "Maintenance", "type": "mm", "title": "Maintenance"},
             ),
         ],
     ),
@@ -121,21 +120,21 @@ tables = [
         columns=[Column("serial_number", "SingleLineText")],
         relationships=[
             Column(
-                "deployments",
+                "Deployments",
                 "Links",
                 extra={
                     "childId": "Deployments",
                     "type": "hm",
-                    "title": "deployments",
+                    "title": "Deployments",
                 },
             ),
             Column(
-                "maintenance",
+                "Maintenance",
                 "Links",
                 extra={
                     "childId": "Maintenance",
                     "type": "mm",
-                    "title": "maintenance",
+                    "title": "Maintenance",
                 },
             ),
         ],
@@ -178,17 +177,17 @@ tables = [
         ],
         relationships=[
             Column(
-                "model_id",
+                "Inventory",
                 "LinkToAnotherRecord",
-                extra={"childId": "Inventory", "type": "hm", "title": "model_id"},
+                extra={"childId": "Inventory", "type": "hm", "title": "Inventory"},
             ),
             Column(
-                "model_elements",
+                "Model Elements",
                 "Links",
                 extra={
                     "childId": "Model Elements",
                     "type": "hm",
-                    "title": "model_elements",
+                    "title": "Model Elements",
                 },
             ),
         ],
@@ -202,12 +201,12 @@ tables = [
         ],
         relationships=[
             Column(
-                "element_rec",
+                "Model Elements",
                 "Links",
                 extra={
                     "childId": "Model Elements",
                     "type": "hm",
-                    "title": "element_rec",
+                    "title": "Model Elements",
                 },
             ),
         ],
@@ -220,21 +219,21 @@ tables = [
         ],
         relationships=[
             Column(
-                "model_elements",
+                "Model Elements",
                 "Links",
                 extra={
                     "childId": "Model Elements",
                     "type": "hm",
-                    "title": "model_elements",
+                    "title": "Model Elements",
                 },
             ),
             Column(
-                "measurement_rec",
+                "Elements",
                 "Links",
                 extra={
                     "childId": "Elements",
                     "type": "hm",
-                    "title": "measurement_rec",
+                    "title": "Elements",
                 },
             ),
         ],
