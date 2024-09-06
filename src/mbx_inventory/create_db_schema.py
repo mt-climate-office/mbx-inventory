@@ -9,6 +9,19 @@ def check_resp_status_code(resp) -> httpx.Response:
     return resp
 
 
+def get_nocodb_bases(
+    api_key: str,
+    nocodb_url: str = "http://loclahost:8080",
+) -> httpx.Response:
+    resp = httpx.get(
+        f"{nocodb_url}/api/v2/meta/bases",
+        headers={"xc-token": api_key, "Content-Type": "application/json"},
+    )
+
+    resp = check_resp_status_code(resp)
+    return resp
+
+
 def create_mesonet_base(
     api_key: str,
     nocodb_url: str = "http://localhost:8080",
@@ -76,3 +89,5 @@ def populate_table_relationships(
             resp = check_resp_status_code(resp)
             relationship.column_id = resp.json()["id"]
     return base_schema
+
+# TODO: Add lookups and formulas next. Then pinned columns. Then start AT transfer.

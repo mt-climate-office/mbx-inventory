@@ -54,21 +54,6 @@ class BaseSchema:
 
         raise KeyError(f"Table with name '{key}' is not in list of tables.")
 
-    # def search_tables_for_relationship(self, table_name: str, column_name: str) -> str:
-    #     for table in self.tables:
-    #         if table.table_name == table_name:
-    #             break
-    #     for column in table.columns:
-    #         if column.column_name == column_name:
-    #             break
-
-    #     if column_name != column.column_name:
-    #         raise ValueError(
-    #             f"Couldn't find a match for table {table_name} and column {column_name}."
-    #         )
-
-    #     return column.column_id
-
     def match_relationship_column_ids(self) -> None:
         for table in self.tables:
             for relationship in table.relationships:
@@ -77,7 +62,7 @@ class BaseSchema:
                 relationship.extra["parentId"] = table.table_id
 
 
-tables = [
+TABLES = [
     Table(
         "Stations",
         columns=[
