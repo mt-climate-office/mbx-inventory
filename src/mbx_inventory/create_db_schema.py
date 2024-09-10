@@ -1,4 +1,5 @@
 import httpx
+from typing import Literal
 from .schemas import Table, BaseSchema
 
 
@@ -74,20 +75,53 @@ def create_base_tables(
     return tables
 
 
-def populate_table_relationships(
+def populate_relationships_lookups_formulas(
+    column_type: Literal["relationships", "lookups", "formulas"],
+    base_schema: BaseSchema,
+    api_key: str,
+    nocodb_url: str = "http://localhost:8080",
+):
+    assert column_type in [
+        "relationships",
+        "lookups",
+        "formulas",
+    ], "Column type must be one of ['relationships', 'lookups', 'formulas']."
+    for table in base_schema.tables:
+        match column_type:
+            case "relationships":
+                columns = table.relationships
+            case "lookups":
+                columns = table.lookups
+            case "formulas":
+                columns = table.formulas
+
+        for col in columns:
+            resp = httpx.post(
+                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
+                headers={"xc-token": api_key, "Content-Type": "application/json"},
+                json=col.as_dict(),
+            )
+            resp = check_resp_status_code(resp)
+            col.column_id = resp.json()["id"]
+
+    return base_schema
+
+
+def create_primary_columns(
     base_schema: BaseSchema,
     api_key: str,
     nocodb_url: str = "http://localhost:8080",
 ):
     for table in base_schema.tables:
-        for relationship in table.relationships:
-            resp = httpx.post(
-                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
-                headers={"xc-token": api_key, "Content-Type": "application/json"},
-                json=relationship.as_dict(),
-            )
-            resp = check_resp_status_code(resp)
-            relationship.column_id = resp.json()["id"]
-    return base_schema
+        for column in table.columns:
+            if column.is_primary:
+                resp = httpx.post(
+                    f"{nocodb_url}/api/v2/meta/columns/{column.column_id}/primary",
+                    headers={"xc-token": api_key, "Content-Type": "application/json"},
+                )
+
+                check_resp_status_code(resp)
+                break
+
 
 # TODO: Add lookups and formulas next. Then pinned columns. Then start AT transfer.

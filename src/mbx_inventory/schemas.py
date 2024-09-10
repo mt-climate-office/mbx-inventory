@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field, asdict
 from typing import Any
+from pathlib import Path
+import json
 
 
 @dataclass
@@ -9,6 +11,7 @@ class Column:
     name: str = field(init=False)
     extra: dict = field(default_factory=dict)
     column_id: str | None = None
+    is_primary: bool = False
 
     def __post_init__(self):
         self.name = self.column_name
@@ -36,15 +39,26 @@ class Table:
         cols = [x.as_dict() for x in self.columns]
         return {"table_name": self.table_name, "columns": cols}
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Column:
         for column in self.columns:
             if column.column_name == key:
                 return column
+
+        # TODO: Figure out how to put foreignly created relationships here.
+        for relationship in self.relationships:
+            if relationship.column_name == key:
+                return relationship
+
+        for lookup in self.lookups:
+            if lookup.column_name == key:
+                return lookup
+
         raise KeyError(f"Column with name {key} is not present in {self.table_name}.")
 
 
 @dataclass
 class BaseSchema:
+    base_id: str
     tables: list[Table]
 
     def __getitem__(self, key: str) -> Table:
@@ -61,12 +75,28 @@ class BaseSchema:
                 relationship.extra["childId"] = self[child].table_id
                 relationship.extra["parentId"] = table.table_id
 
+    def match_lookup_column_ids(self) -> None:
+        for table in self.tables:
+            for lookup in table.lookups:
+                target = lookup.extra["fk_relation_column_id"]
+                target = table[target]
+
+                lookup.extra["fk_relation_column_id"] = target.table_id
+                lookup.extra["fk_lookup_column_id"] = target[
+                    lookup.extra["fk_lookup_column_id"]
+                ].column_id
+
+    def save(self, pth: Path) -> None:
+        out = asdict(self)
+        with open(pth, "w") as json_file:
+            json.dump(out, json_file, indent=4)
+
 
 TABLES = [
     Table(
         "Stations",
         columns=[
-            Column("station", "SingleLineText"),
+            Column("station", "SingleLineText", is_primary=True),
             Column("name", "SingleLineText"),
             Column("status", "MultiSelect"),
             Column("date_installed", "Date"),
@@ -102,7 +132,10 @@ TABLES = [
     ),
     Table(
         "Inventory",
-        columns=[Column("serial_number", "SingleLineText")],
+        columns=[
+            Column("serial_number", "SingleLineText"),
+            Column("extra", "JSON"),
+        ],
         relationships=[
             Column(
                 "Deployments",
@@ -120,6 +153,37 @@ TABLES = [
                     "childId": "Maintenance",
                     "type": "mm",
                     "title": "Maintenance",
+                },
+            ),
+        ],
+        lookups=[
+            Column(
+                "manufacturer",
+                "Lookup",
+                extra={
+                    # TODO: This one is id in target table
+                    "fk_lookup_column_id": "manufacturer",
+                    # TODO: This one is the column in the current table
+                    "fk_relation_column_id": "Models",
+                    "title": "manufacturer",
+                },
+            ),
+            Column(
+                "model",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "model",
+                    "fk_relation_column_id": "Models",
+                    "title": "model",
+                },
+            ),
+            Column(
+                "component_type",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "component_type",
+                    "fk_relation_column_id": "Models",
+                    "title": "component_type",
                 },
             ),
         ],
