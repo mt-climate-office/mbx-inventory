@@ -60,6 +60,8 @@ class Table:
 class BaseSchema:
     base_id: str
     tables: list[Table]
+    nocodb_url: str
+    nocodb_token: str
 
     def __getitem__(self, key: str) -> Table:
         for table in self.tables:
@@ -72,7 +74,8 @@ class BaseSchema:
         for table in self.tables:
             for relationship in table.relationships:
                 child = relationship.extra["childId"]
-                relationship.extra["childId"] = self[child].table_id
+                child = self[child]
+                relationship.extra["childId"] = child.table_id
                 relationship.extra["parentId"] = table.table_id
 
     def match_lookup_column_ids(self) -> None:
@@ -81,7 +84,7 @@ class BaseSchema:
                 target = lookup.extra["fk_relation_column_id"]
                 target = table[target]
 
-                lookup.extra["fk_relation_column_id"] = target.table_id
+                lookup.extra["fk_relation_column_id"] = target.column_id
                 lookup.extra["fk_lookup_column_id"] = target[
                     lookup.extra["fk_lookup_column_id"]
                 ].column_id
@@ -198,12 +201,12 @@ TABLES = [
         ],
         relationships=[
             Column(
-                "outages",
+                "Outages",
                 "Links",
                 extra={"childId": "Outages", "type": "hm", "title": "Outages"},
             ),
             Column(
-                "maintenance",
+                "Maintenance",
                 "Links",
                 extra={"childId": "Maintenance", "type": "mm", "title": "Maintenance"},
             ),

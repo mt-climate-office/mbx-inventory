@@ -1,6 +1,6 @@
 import httpx
 from typing import Literal
-from .schemas import Table, BaseSchema
+from .schemas import Table, BaseSchema, Column
 
 
 def check_resp_status_code(resp) -> httpx.Response:
@@ -75,11 +75,37 @@ def create_base_tables(
     return tables
 
 
+def find_foreign_column_id(base_schema: BaseSchema, table_name: str, column_name: str) -> BaseSchema:
+    target_table = base_schema[table_name]
+    resp = httpx.get(
+        f"{base_schema.nocodb_url}/api/v2/meta/tables/{target_table.table_id}",
+        headers={"xc-token": base_schema.nocodb_token, "Content-Type": "application/json"},
+    )
+
+    target_column = []
+    for x in resp.json()['columns']:
+        try:
+            meta = x.get('meta')
+            if (column_name == meta.get('singular')) or column_name == meta.get('plural') or (column_name == x['title']):
+                target_column.append(x)
+        except AttributeError:
+            continue
+
+    assert len(target_column) == 1, f"Table {table_name} has more than one column with name {column_name}"
+    target_column = target_column[0]
+
+    base_schema[table_name].columns.append(
+        Column(
+            column_name, 
+            "Links", 
+            column_id=target_column['id']
+        )
+    )
+    return base_schema
+
 def populate_relationships_lookups_formulas(
     column_type: Literal["relationships", "lookups", "formulas"],
     base_schema: BaseSchema,
-    api_key: str,
-    nocodb_url: str = "http://localhost:8080",
 ):
     assert column_type in [
         "relationships",
@@ -97,12 +123,25 @@ def populate_relationships_lookups_formulas(
 
         for col in columns:
             resp = httpx.post(
-                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
-                headers={"xc-token": api_key, "Content-Type": "application/json"},
+                f"{base_schema.nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
+                headers={"xc-token": base_schema.nocodb_token, "Content-Type": "application/json"},
                 json=col.as_dict(),
             )
             resp = check_resp_status_code(resp)
-            col.column_id = resp.json()["id"]
+            if column_type == "relationships":
+                content = resp.json()
+                target = [x for x in content['columns'] if x['title'] == col.column_name]
+                assert len(target) == 1, f"More than one columns named {col.column_name} in table {table.table_name}"
+                target = target[0]
+                col.column_id = target["id"]
+                base_schema = find_foreign_column_id(
+                    base_schema, 
+                    target['title'],
+                    content['title'],
+                )
+
+            else:
+                col.column_id = resp.json()["id"]
 
     return base_schema
 
