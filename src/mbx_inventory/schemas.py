@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field, asdict
 from typing import Any
+from pathlib import Path
+import json
 
 
 @dataclass
@@ -9,6 +11,7 @@ class Column:
     name: str = field(init=False)
     extra: dict = field(default_factory=dict)
     column_id: str | None = None
+    is_primary: bool = False
 
     def __post_init__(self):
         self.name = self.column_name
@@ -36,7 +39,7 @@ class Table:
         cols = [x.as_dict() for x in self.columns]
         return {"table_name": self.table_name, "columns": cols}
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> Column:
         for column in self.columns:
             if column.column_name == key:
                 return column
@@ -54,7 +57,10 @@ class Table:
 
 @dataclass
 class BaseSchema:
+    base_id: str
     tables: list[Table]
+    nocodb_url: str
+    nocodb_token: str
 
     def __getitem__(self, key: str) -> Table:
         for table in self.tables:
@@ -67,7 +73,8 @@ class BaseSchema:
         for table in self.tables:
             for relationship in table.relationships:
                 child = relationship.extra["childId"]
-                relationship.extra["childId"] = self[child].table_id
+                child = self[child]
+                relationship.extra["childId"] = child.table_id
                 relationship.extra["parentId"] = table.table_id
 
     def match_lookup_column_ids(self) -> None:
@@ -94,7 +101,7 @@ TABLES = [
     Table(
         "Stations",
         columns=[
-            Column("station", "SingleLineText"),
+            Column("station", "SingleLineText", is_primary=True),
             Column("name", "SingleLineText"),
             Column("status", "MultiSelect"),
             Column("date_installed", "Date"),
@@ -140,7 +147,10 @@ TABLES = [
     ),
     Table(
         "Inventory",
-        columns=[Column("serial_number", "SingleLineText")],
+        columns=[
+            Column("serial_number", "SingleLineText"),
+            Column("extra", "JSON"),
+        ],
         relationships=[
             Column(
                 "Deployments",
@@ -211,12 +221,12 @@ TABLES = [
         ],
         relationships=[
             Column(
-                "outages",
+                "Outages",
                 "Links",
                 extra={"childId": "Outages", "type": "hm", "title": "Outages"},
             ),
             Column(
-                "maintenance",
+                "Maintenance",
                 "Links",
                 extra={"childId": "Maintenance", "type": "mm", "title": "Maintenance"},
             ),

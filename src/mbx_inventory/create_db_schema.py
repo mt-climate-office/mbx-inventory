@@ -1,5 +1,6 @@
 import httpx
-from .schemas import Table, BaseSchema
+from typing import Literal
+from .schemas import Table, BaseSchema, Column
 
 
 def check_resp_status_code(resp) -> httpx.Response:
