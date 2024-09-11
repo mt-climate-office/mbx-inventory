@@ -40,6 +40,15 @@ class Table:
         for column in self.columns:
             if column.column_name == key:
                 return column
+
+        for relationship in self.relationships:
+            if relationship.column_name == key:
+                return relationship
+
+        for lookup in self.lookups:
+            if lookup.column_name == key:
+                return lookup
+
         raise KeyError(f"Column with name {key} is not present in {self.table_name}.")
 
 
@@ -60,6 +69,25 @@ class BaseSchema:
                 child = relationship.extra["childId"]
                 relationship.extra["childId"] = self[child].table_id
                 relationship.extra["parentId"] = table.table_id
+
+    def match_lookup_column_ids(self) -> None:
+        for table in self.tables:
+            for lookup in table.lookups:
+                
+                target = lookup.extra["fk_relation_column_id"]
+                target = self[target]
+
+                lookup.extra["fk_lookup_column_id"] = target[
+                    lookup.column_name
+                ].column_id
+                lookup.extra["fk_relation_column_id"] = table[
+                    lookup.extra["fk_relation_column_id"]
+                ].column_id
+
+    def save(self, pth: Path) -> None:
+        out = asdict(self)
+        with open(pth, "w") as json_file:
+            json.dump(out, json_file, indent=4)
 
 
 TABLES = [
@@ -99,6 +127,16 @@ TABLES = [
                 extra={"childId": "Maintenance", "type": "mm", "title": "Maintenance"},
             ),
         ],
+        formulas=[
+            Column(
+                "id_col",
+                "Formula",
+                extra={
+                    "formula_raw": "CONCAT({name}, ':', {station})",
+                    "title": "id_col"
+                },
+            )
+        ]
     ),
     Table(
         "Inventory",
@@ -123,6 +161,45 @@ TABLES = [
                 },
             ),
         ],
+        lookups=[
+            Column(
+                "manufacturer",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "manufacturer",
+                    "fk_relation_column_id": "Models",
+                    "title": "manufacturer",
+                },
+            ),
+            Column(
+                "model",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "model",
+                    "fk_relation_column_id": "Models",
+                    "title": "model",
+                },
+            ),
+            Column(
+                "component_type",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "component_type",
+                    "fk_relation_column_id": "Models",
+                    "title": "component_type",
+                },
+            ),
+        ],
+        formulas=[
+            Column(
+                "id_col",
+                "Formula",
+                extra={
+                    "formula_raw": "CONCAT({component_type}, ': ', {manufacturer}, ' ', {model}, '—', {serial_number})",
+                    "title": "id_col",
+                },
+            )
+        ]
     ),
     Table(
         "Deployments",
@@ -144,14 +221,43 @@ TABLES = [
                 extra={"childId": "Maintenance", "type": "mm", "title": "Maintenance"},
             ),
         ],
+        lookups=[
+            Column(
+                "serial_number",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "serial_number",
+                    "fk_relation_column_id": "Inventory",
+                    "title": "serial_number",
+                },
+            ),
+            Column(
+                "station",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "station",
+                    "fk_relation_column_id": "Stations",
+                    "title": "station"
+                }
+            )
+        ]
     ),
     Table(
         "Model Elements",
         columns=[
-            Column("range_min", "Number"),
-            Column("range_max", "Number"),
-            Column("qc_units", "SingleLineText"),
+            Column("model_qaqc", "JSON")
         ],
+        lookups=[
+            Column(
+                "element_qaqc",
+                "Lookup",
+                extra={
+                    "fk_lookup_column_id": "element_qaqc",
+                    "fk_relation_column_id": "Elements",
+                    "title": "element_qaqc"
+                }
+            )
+        ]
     ),
     Table(
         "Models",
@@ -180,9 +286,9 @@ TABLES = [
     Table(
         "Elements",
         columns=[
-            Column("element", "SingleLineText"),
+            Column("element", "SingleLineText", is_primary=True),
             Column("description", "SingleLineText"),
-            Column("extra", "JSON"),
+            Column("element_qaqc", "JSON"),
         ],
         relationships=[
             Column(
@@ -238,6 +344,21 @@ TABLES = [
     Table(
         "Outages",
         columns=[Column("outage_start", "Date"), Column("outage_end", "Date")],
+    ),
+    Table(
+        "RequestSchemas",
+        columns=[
+            Column("name", "SingleLineText", is_primary=True),
+            Column("interval_min", "Number")
+        ],
+        # Link to stations
+    ),
+    Table(
+        "ResponseSchemas",
+        columns=[
+            Column("name", "SingleLineText", is_primary=True),
+        ],
+        # Link to elements, link to stations
     ),
     Table(
         "Contacts",

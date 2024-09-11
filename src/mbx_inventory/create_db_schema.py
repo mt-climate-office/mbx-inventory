@@ -10,12 +10,12 @@ def check_resp_status_code(resp) -> httpx.Response:
 
 
 def get_nocodb_bases(
-    api_key: str,
+    nocodb_token: str,
     nocodb_url: str = "http://loclahost:8080",
 ) -> httpx.Response:
     resp = httpx.get(
         f"{nocodb_url}/api/v2/meta/bases",
-        headers={"xc-token": api_key, "Content-Type": "application/json"},
+        headers={"xc-token": nocodb_token, "Content-Type": "application/json"},
     )
 
     resp = check_resp_status_code(resp)
@@ -23,14 +23,14 @@ def get_nocodb_bases(
 
 
 def create_mesonet_base(
-    api_key: str,
+    nocodb_token: str,
     nocodb_url: str = "http://localhost:8080",
     db_base_name: str = "Mesonet",
 ) -> str:
     resp = httpx.post(
         f"{nocodb_url}/api/v2/meta/bases",
         json={"title": db_base_name, "type": "database", "external": False},
-        headers={"xc-token": api_key, "Content-Type": "application/json"},
+        headers={"xc-token": nocodb_token, "Content-Type": "application/json"},
     )
 
     resp = check_resp_status_code(resp)
@@ -43,13 +43,13 @@ def create_mesonet_base(
 def create_base_tables(
     tables: list[Table],
     base_id: str,
-    api_key: str,
+    nocodb_token: str,
     nocodb_url: str = "http://localhost:8080",
 ) -> list[Table]:
     for table in tables:
         resp = httpx.post(
             f"{nocodb_url}/api/v2/meta/bases/{base_id}/tables",
-            headers={"xc-token": api_key, "Content-Type": "application/json"},
+            headers={"xc-token": nocodb_token, "Content-Type": "application/json"},
             json=table.build_request_json(),
         )
 
@@ -74,20 +74,107 @@ def create_base_tables(
     return tables
 
 
-def populate_table_relationships(
+def find_foreign_column_id(
+    base_schema: BaseSchema, table_name: str, column_name: str
+) -> BaseSchema:
+    target_table = base_schema[table_name]
+    resp = httpx.get(
+        f"{base_schema.nocodb_url}/api/v2/meta/tables/{target_table.table_id}",
+        headers={
+            "xc-token": base_schema.nocodb_token,
+            "Content-Type": "application/json",
+        },
+    )
+
+    target_column = []
+    for x in resp.json()["columns"]:
+        try:
+            meta = x.get("meta")
+            if (
+                (column_name == meta.get("singular"))
+                or column_name == meta.get("plural")
+                or (column_name == x["title"])
+            ):
+                target_column.append(x)
+        except AttributeError:
+            continue
+
+    assert (
+        len(target_column) == 1
+    ), f"Table {table_name} has more than one column with name {column_name}"
+
+    target_column = target_column[0]
+
+    base_schema[table_name].columns.append(
+        Column(column_name, "Links", column_id=target_column["id"])
+    )
+    return base_schema
+
+
+def populate_relationships_lookups_formulas(
+    column_type: Literal["relationships", "lookups", "formulas"],
     base_schema: BaseSchema,
-    api_key: str,
+    nocodb_token: str,
+    nocodb_url: str = "http://localhost:8080",
+):
+    assert column_type in [
+        "relationships",
+        "lookups",
+        "formulas",
+    ], "Column type must be one of ['relationships', 'lookups', 'formulas']."
+    for table in base_schema.tables:
+        match column_type:
+            case "relationships":
+                columns = table.relationships
+            case "lookups":
+                columns = table.lookups
+            case "formulas":
+                columns = table.formulas
+
+        for col in columns:
+            resp = httpx.post(
+                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
+                headers={
+                    "xc-token": nocodb_token,
+                    "Content-Type": "application/json",
+                },
+                json=col.as_dict(),
+            )
+            resp = check_resp_status_code(resp)
+            if column_type == "relationships":
+                content = resp.json()
+                target = [
+                    x for x in content["columns"] if x["title"] == col.column_name
+                ]
+                assert (
+                    len(target) == 1
+                ), f"More than one columns named {col.column_name} in table {table.table_name}"
+                target = target[0]
+                col.column_id = target["id"]
+                base_schema = find_foreign_column_id(
+                    base_schema,
+                    target["title"],
+                    content["title"],
+                )
+
+            else:
+                col.column_id = resp.json()["id"]
+
+    return base_schema
+
+
+def create_primary_columns(
+    base_schema: BaseSchema,
+    nocodb_token: str,
     nocodb_url: str = "http://localhost:8080",
 ):
     for table in base_schema.tables:
-        for relationship in table.relationships:
-            resp = httpx.post(
-                f"{nocodb_url}/api/v2/meta/tables/{table.table_id}/columns",
-                headers={"xc-token": api_key, "Content-Type": "application/json"},
-                json=relationship.as_dict(),
-            )
-            resp = check_resp_status_code(resp)
-            relationship.column_id = resp.json()["id"]
-    return base_schema
+        for column in table.columns:
+            if column.is_primary:
+                resp = httpx.post(
+                    f"{nocodb_url}/api/v2/meta/columns/{column.column_id}/primary",
+                    headers={"xc-token": nocodb_token, "Content-Type": "application/json"},
+                )
 
-# TODO: Add lookups and formulas next. Then pinned columns. Then start AT transfer.
+                check_resp_status_code(resp)
+                break
