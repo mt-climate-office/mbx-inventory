@@ -82,11 +82,18 @@ class BaseSchema:
         for table in self.tables:
             for lookup in table.lookups:
                 target = lookup.extra["fk_relation_column_id"]
-                target = table[target]
+                target = self[target]
 
-                lookup.extra["fk_relation_column_id"] = target.column_id
+                # # TODO: This one is id in target table
+                # "fk_lookup_column_id": "manufacturer",
+                # # TODO: This one is the column in the current table
+                # "fk_relation_column_id": "Models",
+
                 lookup.extra["fk_lookup_column_id"] = target[
-                    lookup.extra["fk_lookup_column_id"]
+                    lookup.column_name
+                ].column_id
+                lookup.extra["fk_relation_column_id"] = table[
+                    lookup.extra["fk_relation_column_id"]
                 ].column_id
 
     def save(self, pth: Path) -> None:
