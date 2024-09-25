@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field, asdict
 from typing import Any
 from pathlib import Path
@@ -59,8 +61,6 @@ class Table:
 class BaseSchema:
     base_id: str
     tables: list[Table]
-    nocodb_url: str
-    nocodb_token: str
 
     def __getitem__(self, key: str) -> Table:
         for table in self.tables:
@@ -80,7 +80,6 @@ class BaseSchema:
     def match_lookup_column_ids(self) -> None:
         for table in self.tables:
             for lookup in table.lookups:
-                
                 target = lookup.extra["fk_relation_column_id"]
                 target = self[target]
 
@@ -95,6 +94,23 @@ class BaseSchema:
         out = asdict(self)
         with open(pth, "w") as json_file:
             json.dump(out, json_file, indent=4)
+
+    @classmethod
+    def load(cls, pth: Path) -> BaseSchema:
+        with pth.open() as json_file:
+            data = json.load(json_file)
+
+        tables = []
+        for table in data["tables"]:
+            columns = []
+            for column in table["columns"]:
+                name = column.pop("column_name")
+                uidt = column.pop("uidt")
+                columns.append(Column(name, uidt, extra=column))
+            table.pop("columns")
+            tables.append(Table(**table, columns=columns))
+
+        return cls(data["base_id"], tables)
 
 
 TABLES = [
@@ -140,10 +156,10 @@ TABLES = [
                 "Formula",
                 extra={
                     "formula_raw": "CONCAT({name}, ':', {station})",
-                    "title": "id_col"
+                    "title": "id_col",
                 },
             )
-        ]
+        ],
     ),
     Table(
         "Inventory",
@@ -209,7 +225,7 @@ TABLES = [
                     "title": "id_col",
                 },
             )
-        ]
+        ],
     ),
     Table(
         "Deployments",
@@ -247,16 +263,14 @@ TABLES = [
                 extra={
                     "fk_lookup_column_id": "station",
                     "fk_relation_column_id": "Stations",
-                    "title": "station"
-                }
-            )
-        ]
+                    "title": "station",
+                },
+            ),
+        ],
     ),
     Table(
         "Model Elements",
-        columns=[
-            Column("model_qaqc", "JSON")
-        ],
+        columns=[Column("model_qaqc", "JSON")],
         lookups=[
             Column(
                 "element_qaqc",
@@ -264,10 +278,10 @@ TABLES = [
                 extra={
                     "fk_lookup_column_id": "element_qaqc",
                     "fk_relation_column_id": "Elements",
-                    "title": "element_qaqc"
-                }
+                    "title": "element_qaqc",
+                },
             )
-        ]
+        ],
     ),
     Table(
         "Models",
@@ -359,7 +373,7 @@ TABLES = [
         "RequestSchemas",
         columns=[
             Column("name", "SingleLineText", is_primary=True),
-            Column("interval_min", "Number")
+            Column("interval_min", "Number"),
         ],
         # Link to stations
     ),

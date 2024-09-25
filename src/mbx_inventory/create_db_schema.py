@@ -1,5 +1,5 @@
 import httpx
-from typing import Literal
+from typing import Literal, Any
 from .schemas import Table, BaseSchema, Column
 
 
@@ -174,8 +174,61 @@ def create_primary_columns(
             if column.is_primary:
                 resp = httpx.post(
                     f"{nocodb_url}/api/v2/meta/columns/{column.column_id}/primary",
-                    headers={"xc-token": nocodb_token, "Content-Type": "application/json"},
+                    headers={
+                        "xc-token": nocodb_token,
+                        "Content-Type": "application/json",
+                    },
                 )
 
                 check_resp_status_code(resp)
                 break
+
+
+def list_bases(
+    nocodb_token: str, nocodb_url: str = "http://localhost:8080"
+) -> list[dict[str, Any]]:
+    resp = httpx.get(
+        f"{nocodb_url}/api/v2/meta/bases",
+        headers={"xc-token": nocodb_token},
+    )
+
+    resp = check_resp_status_code(resp)
+    return resp.json()
+
+
+def list_table_columns(
+    table_id: str,
+    nocodb_token: str,
+    nocodb_url: str = "http://localhost:8080",
+) -> list[Column]:
+    resp = httpx.get(
+        f"{nocodb_url}/api/v2/meta/tables/{table_id}",
+        headers={"xc-token": nocodb_token},
+    )
+
+    resp = check_resp_status_code(resp)
+    columns = []
+    for column in resp.json()["columns"]:
+        name = column.pop("column_name")
+        uidt = column.pop("uidt")
+        columns.append(Column(name, uidt, extra=column))
+
+    return columns
+
+
+def create_tables_from_base(
+    base_id: str, nocodb_token: str, nocodb_url: str = "http://localhost:8080"
+) -> list[Table]:
+    resp = httpx.get(
+        f"{nocodb_url}/api/v2/meta/bases/{base_id}/tables",
+        headers={"xc-token": nocodb_token},
+    )
+
+    resp = check_resp_status_code(resp)
+    tables = []
+    for table in resp.json()["list"]:
+        columns = list_table_columns(table["id"], nocodb_token, nocodb_url)
+
+        tables.append(Table(table["title"], columns=columns, table_id=table["id"]))
+
+    return tables
