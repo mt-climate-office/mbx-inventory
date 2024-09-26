@@ -11,12 +11,14 @@ class Column:
     column_name: str
     uidt: str
     name: str = field(init=False)
+    title: str = field(init=False)
     extra: dict = field(default_factory=dict)
     column_id: str | None = None
     is_primary: bool = False
 
     def __post_init__(self):
         self.name = self.column_name
+        self.title = self.column_name
 
     def as_dict(self):
         d = asdict(self)
@@ -29,6 +31,8 @@ class Column:
 
 @dataclass
 class Table:
+    # TODO: Refactor to only have one columns attribute rather than relationships,
+    # lookups, etc.
     table_name: str
     columns: list[Column]
     relationships: list[Column] = field(default_factory=list)
@@ -104,9 +108,8 @@ class BaseSchema:
         for table in data["tables"]:
             columns = []
             for column in table["columns"]:
-                name = column.pop("column_name")
-                uidt = column.pop("uidt")
-                columns.append(Column(name, uidt, extra=column))
+                column.pop("name", None)
+                columns.append(Column(**column))
             table.pop("columns")
             tables.append(Table(**table, columns=columns))
 

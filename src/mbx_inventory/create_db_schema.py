@@ -210,8 +210,11 @@ def list_table_columns(
     columns = []
     for column in resp.json()["columns"]:
         name = column.pop("column_name")
+        if name is None:
+            name = column.pop("title")
         uidt = column.pop("uidt")
-        columns.append(Column(name, uidt, extra=column))
+        column_id = column["id"]
+        columns.append(Column(name, uidt, extra=column, column_id=column_id))
 
     return columns
 
