@@ -9,6 +9,35 @@ base_schema = BaseSchema.load(Path("/home/cbrust/.config/mbx/pzmm1bqzz8iivwu.jso
 CONFIG = Config.load(Config.file)
 
 
+table_id = 'mllkt0116qzkkzp'
+def get_table_records(table_id, params: dict | None=None, content: list | None=None):
+    if params is None:
+        params = {}
+    if content is None: 
+        content = []
+    
+    while True:
+        resp = httpx.get(
+            f"{CONFIG.nocodb_url}/api/v2/tables/{table_id}/records",
+            headers={
+                "xc-token": CONFIG.nocodb_token,
+                "Content-Type": "application/json",
+            },
+            params=params
+        )
+
+        check_resp_status_code(resp)
+        resp = resp.json()
+        if len(data := resp.get("list", [])) > 0:
+            content.extend(data)
+
+        if not resp['pageInfo'].get('isLastPage', True):
+            offset = resp['pageInfo']['pageSize'] * resp['pageInfo'].get("page", 1)
+            params['offset'] = offset
+        else:
+            break
+        break
+
 def delete_table(table_id):
     resp = httpx.delete(
         f"{CONFIG.nocodb_url}/api/v2/meta/tables/{table_id}",
