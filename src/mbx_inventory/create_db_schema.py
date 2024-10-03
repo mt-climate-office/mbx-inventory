@@ -76,13 +76,13 @@ def create_base_tables(
 
 
 def find_foreign_column_id(
-    base_schema: BaseSchema, table_name: str, column_name: str
+    base_schema: BaseSchema, table_name: str, column_name: str, nocodb_url: str, nocodb_token: str,
 ) -> BaseSchema:
     target_table = base_schema[table_name]
     resp = httpx.get(
-        f"{base_schema.nocodb_url}/api/v2/meta/tables/{target_table.table_id}",
+        f"{nocodb_url}/api/v2/meta/tables/{target_table.table_id}",
         headers={
-            "xc-token": base_schema.nocodb_token,
+            "xc-token": nocodb_token,
             "Content-Type": "application/json",
         },
     )
@@ -156,6 +156,8 @@ def populate_relationships_lookups_formulas(
                     base_schema,
                     target["title"],
                     content["title"],
+                    nocodb_token=nocodb_token,
+                    nocodb_url=nocodb_url
                 )
 
             else:

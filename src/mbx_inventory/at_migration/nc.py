@@ -146,7 +146,7 @@ def fix_stations_table(base_schema):
         check_resp_status_code(resp)
 
     keep_cols = [x.column_name for x in mbx_schema["Stations"].columns]
-    keep_cols.extend("id_col")
+    keep_cols.extend(["id_col"])
     roll_cols = [x for x in stations.columns if x.column_name not in keep_cols]
     roll_cols = [x for x in roll_cols if x.column_name not in delete_cols]
     roll_cols = [x for x in roll_cols if x.uidt != "Links"]
@@ -182,3 +182,99 @@ def fix_stations_table(base_schema):
 
     for column in roll_cols:
         delete_column(stations[column].column_id)
+
+def fix_inventory_table(base_schema):
+    inventory = base_schema["Component Inventory"]
+    mbx_schema = BaseSchema(base_id=None, tables=TABLES)
+
+    resp = httpx.patch(
+        f"{CONFIG.nocodb_url}/api/v2/meta/tables/{inventory.table_id}",
+        headers={
+            "xc-token": CONFIG.nocodb_token,
+            "Content-Type": "application/json",
+        },
+        json={
+            "table_name": "Inventory",
+            "title": "Inventory"
+        }
+    )
+
+    check_resp_status_code(resp)
+
+    resp = httpx.post(
+        f"{CONFIG.nocodb_url}/api/v2/meta/tables/{inventory.table_id}/columns",
+        headers={
+            "xc-token": CONFIG.nocodb_token,
+            "Content-Type": "application/json",
+        },
+        json=Column(
+            "id_col",
+            "Formula",
+            extra={
+                "formula_raw": 'CONCAT({component_type}, ": ", {manufacturer}, " ", {model}, "—", {serial_number})',
+                "title": "id_col",
+            },
+        ).as_dict(),
+    )
+
+    check_resp_status_code(resp)
+
+    target = [x for x in resp.json()["columns"] if x["column_name"] == "id_col"]
+    assert len(target) == 1
+
+    resp = httpx.post(
+        f"{CONFIG.nocodb_url}/api/v2/meta/columns/{target[0]['id']}/primary",
+        headers={
+            "xc-token": CONFIG.nocodb_token,
+            "Content-Type": "application/json",
+        },
+    )
+
+    delete_column(inventory["id_1"].column_id)
+
+    keep_cols = [x.column_name for x in mbx_schema["Inventory"].columns]
+    keep_cols.extend(["id_col"])
+    roll_cols = [x for x in inventory.columns if x.column_name not in keep_cols]
+    roll_cols = [x for x in roll_cols if x.uidt != "Links"]
+    roll_cols = [x for x in roll_cols if x.uidt != "Lookup"]
+    roll_cols = [
+        x
+        for x in roll_cols
+        if (not x.extra.get("system", False)) or (x.extra.get("system", None) is None)
+    ]
+    roll_cols = [x for x in roll_cols if not x.column_name.startswith("id")]
+    roll_cols = [x.column_name for x in roll_cols]
+
+    records = get_table_records(
+        table_id=inventory.table_id, params={"fields": "Id," + ",".join(roll_cols)}
+    )
+
+    create_column(inventory.table_id, Column("extra", "JSON").as_dict())
+
+    for record in records:
+        _id = record["Id"]
+        if (comment := record["comments"]) is not None and "IP" in comment:
+            comment = comment.split("\n")
+            ip = [x for x in comment if 'IP' in x]
+            assert len(ip) == 1
+
+            ip = ip[0].split(":")[-1].strip()
+            assert ip.count(".") == 3
+
+        extra = {k: v for k, v in record.items() if k != "Id"}
+        extra["IP"] = ip
+        out = {"Id": _id, "extra": extra}
+
+        resp = httpx.patch(
+            f"{CONFIG.nocodb_url}/api/v2/tables/{inventory.table_id}/records",
+            headers={
+                "xc-token": CONFIG.nocodb_token,
+                "Content-Type": "application/json",
+            },
+            json=out,
+        )
+
+        check_resp_status_code(resp)
+
+    for column in roll_cols:
+        delete_column(inventory[column].column_id)
