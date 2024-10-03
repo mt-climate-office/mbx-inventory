@@ -11,14 +11,15 @@ class Column:
     column_name: str
     uidt: str
     name: str = field(init=False)
-    title: str = field(init=False)
+    title: str | None = None
     extra: dict = field(default_factory=dict)
     column_id: str | None = None
     is_primary: bool = False
 
     def __post_init__(self):
         self.name = self.column_name
-        self.title = self.column_name
+        if self.title is None:
+            self.title = self.column_name
 
     def as_dict(self):
         d = asdict(self)
