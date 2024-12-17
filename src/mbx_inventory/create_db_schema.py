@@ -76,7 +76,11 @@ def create_base_tables(
 
 
 def find_foreign_column_id(
-    base_schema: BaseSchema, table_name: str, column_name: str, nocodb_url: str, nocodb_token: str,
+    base_schema: BaseSchema,
+    table_name: str,
+    column_name: str,
+    nocodb_url: str,
+    nocodb_token: str,
 ) -> BaseSchema:
     target_table = base_schema[table_name]
     resp = httpx.get(
@@ -157,7 +161,7 @@ def populate_relationships_lookups_formulas(
                     target["title"],
                     content["title"],
                     nocodb_token=nocodb_token,
-                    nocodb_url=nocodb_url
+                    nocodb_url=nocodb_url,
                 )
 
             else:

@@ -4,7 +4,9 @@ from mesonet_in_a_box.config import Config
 import httpx
 from pathlib import Path
 
-base_schema = BaseSchema.load(Path("/Users/Colin.Brust/.config/mbx/pg8vslwpxt0pqvk.json"))
+base_schema = BaseSchema.load(
+    Path("/Users/Colin.Brust/.config/mbx/pg8vslwpxt0pqvk.json")
+)
 CONFIG = Config.load(Config.file)
 
 
@@ -183,6 +185,7 @@ def fix_stations_table(base_schema):
     for column in roll_cols:
         delete_column(stations[column].column_id)
 
+
 def fix_inventory_table(base_schema):
     inventory = base_schema["Component Inventory"]
     mbx_schema = BaseSchema(base_id=None, tables=TABLES)
@@ -193,10 +196,7 @@ def fix_inventory_table(base_schema):
             "xc-token": CONFIG.nocodb_token,
             "Content-Type": "application/json",
         },
-        json={
-            "table_name": "Inventory",
-            "title": "Inventory"
-        }
+        json={"table_name": "Inventory", "title": "Inventory"},
     )
 
     check_resp_status_code(resp)
@@ -255,7 +255,7 @@ def fix_inventory_table(base_schema):
         _id = record["Id"]
         if (comment := record["comments"]) is not None and "IP" in comment:
             comment = comment.split("\n")
-            ip = [x for x in comment if 'IP' in x]
+            ip = [x for x in comment if "IP" in x]
             assert len(ip) == 1
 
             ip = ip[0].split(":")[-1].strip()
