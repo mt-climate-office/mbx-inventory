@@ -104,9 +104,9 @@ def find_foreign_column_id(
         except AttributeError:
             continue
 
-    assert (
-        len(target_column) == 1
-    ), f"Table {table_name} has more than one column with name {column_name}"
+    assert len(target_column) == 1, (
+        f"Table {table_name} has more than one column with name {column_name}"
+    )
 
     target_column = target_column[0]
 
@@ -151,9 +151,9 @@ def populate_relationships_lookups_formulas(
                 target = [
                     x for x in content["columns"] if x["title"] == col.column_name
                 ]
-                assert (
-                    len(target) == 1
-                ), f"More than one columns named {col.column_name} in table {table.table_name}"
+                assert len(target) == 1, (
+                    f"More than one columns named {col.column_name} in table {table.table_name}"
+                )
                 target = target[0]
                 col.column_id = target["id"]
                 base_schema = find_foreign_column_id(
