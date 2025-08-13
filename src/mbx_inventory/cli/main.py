@@ -9,15 +9,23 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from .config import (
-    InventoryConfig,
-    ConfigurationError,
-)
+from .config import InventoryConfig
 from .progress import ProgressReporter
+from .exceptions import (
+    InventoryCLIError,
+)
 
 # Create the main typer application
 app = typer.Typer(
-    help="Inventory synchronization CLI for Mesonet-in-a-Box",
+    help="Inventory synchronization CLI for Mesonet-in-a-Box\n\n"
+    "This CLI tool synchronizes inventory data from various backends (AirTable, Baserow, NocoDB) "
+    "to a PostgreSQL database. It provides commands for configuration management, validation, "
+    "and data synchronization with support for dry-run previews and selective table syncing.\n\n"
+    "Examples:\n"
+    "  mbx-inventory validate --config inventory_config.json\n"
+    "  mbx-inventory sync --dry-run --verbose\n"
+    "  mbx-inventory sync --tables elements,stations\n"
+    "  mbx-inventory config show",
     no_args_is_help=True,
 )
 
@@ -40,10 +48,25 @@ def validate(
         False, "--verbose", "-v", help="Enable verbose logging"
     ),
 ):
-    """Validate backend connection and configuration."""
+    """Validate backend connection and configuration.
+
+    This command validates your inventory configuration file and tests connectivity
+    to both the backend (AirTable/Baserow/NocoDB) and PostgreSQL database.
+
+    The validation process includes:
+    - Configuration file syntax and structure validation
+    - Environment variable availability check
+    - Backend API connectivity test
+    - PostgreSQL database connectivity test
+    - Table mapping validation
+
+    Examples:
+      mbx-inventory validate
+      mbx-inventory validate --config my_config.json --verbose
+    """
     # Initialize progress reporter
     reporter = ProgressReporter(verbose=verbose, console=console)
-
+    load_dotenv()
     try:
         with reporter.operation_context("Configuration Validation", total_items=5):
             # Load configuration
@@ -101,8 +124,9 @@ def validate(
 
             reporter.complete_operation("All validation checks passed")
 
-    except ConfigurationError as e:
-        reporter.report_error(f"Configuration Error: {e}")
+    except InventoryCLIError as e:
+        # Handle our custom errors with detailed formatting
+        reporter.report_error(e.get_formatted_message())
         raise typer.Exit(1)
     except Exception as e:
         reporter.report_error(f"Unexpected error: {e}")
@@ -132,49 +156,154 @@ def sync(
         False, "--verbose", "-v", help="Enable verbose logging"
     ),
 ):
+    """Sync inventory data from backend to PostgreSQL.
+
+    This command synchronizes inventory data from your configured backend
+    (AirTable, Baserow, or NocoDB) to a PostgreSQL database. The sync process
+    handles both creating new records and updating existing ones.
+
+    Features:
+    - Dry-run mode to preview changes without applying them
+    - Selective table synchronization with --tables option
+    - Progress reporting and detailed logging
+    - Automatic retry logic for failed operations
+    - Transaction rollback on errors
+
+    Available tables: elements, stations, component_models, inventory,
+    deployments, component_elements, request_schemas, response_schemas
+
+    Examples:
+      mbx-inventory sync --dry-run
+      mbx-inventory sync --tables elements,stations --verbose
+      mbx-inventory sync --config production_config.json
+    """
     load_dotenv()
-    """Sync inventory data from backend to PostgreSQL."""
+
     # Initialize progress reporter
     reporter = ProgressReporter(verbose=verbose, console=console)
 
-    try:
-        reporter.log_info("Starting inventory synchronization")
+    async def run_sync():
+        try:
+            reporter.log_info("Starting inventory synchronization")
 
-        # Load configuration
-        reporter.log_info("Loading configuration file", {"file": str(config_file)})
-        config = InventoryConfig.load_from_file(config_file)
+            # Load configuration
+            reporter.log_info("Loading configuration file", {"file": str(config_file)})
+            config = InventoryConfig.load_from_file(config_file)
 
-        # Parse tables list if provided
-        table_list = None
-        if tables:
-            table_list = [t.strip() for t in tables.split(",")]
-            reporter.log_info("Tables to sync", {"tables": table_list})
-        else:
-            reporter.log_info("Syncing all configured tables")
+            # Parse tables list if provided
+            table_list = None
+            if tables:
+                table_list = [t.strip() for t in tables.split(",")]
+                reporter.log_info("Tables to sync", {"tables": table_list})
+            else:
+                reporter.log_info("Syncing all configured tables")
 
-        # Log operation mode
-        if dry_run:
-            reporter.log_info("Running in dry-run mode - no changes will be made")
-        else:
-            reporter.log_info("Running in live mode - changes will be applied")
+            # Log operation mode
+            if dry_run:
+                reporter.log_info("Running in dry-run mode - no changes will be made")
+            else:
+                reporter.log_info("Running in live mode - changes will be applied")
 
-        # Placeholder for sync implementation
-        reporter.report_warning(
-            "Sync functionality will be implemented in subsequent tasks"
-        )
+            # Create database engine
+            from mbx_db import make_connection_string
+            from sqlalchemy.ext.asyncio import create_async_engine
 
-        reporter.log_info("Sync operation completed")
+            connection_string = make_connection_string(
+                username=config.database.username,
+                password=config.database.password,
+                host=config.database.host,
+                database=config.database.database,
+                port=config.database.port,
+            )
 
-    except ConfigurationError as e:
-        reporter.report_error(f"Configuration Error: {e}")
-        raise typer.Exit(1)
-    except Exception as e:
-        reporter.report_error(f"Sync operation failed: {e}")
-        raise typer.Exit(1)
+            engine = create_async_engine(connection_string)
+
+            try:
+                # Get inventory instance
+                inventory = config.get_inventory_instance()
+
+                # Create sync engine
+                from .sync_engine import SyncEngine
+
+                sync_engine = SyncEngine(
+                    inventory=inventory,
+                    db_engine=engine,
+                    progress_reporter=reporter,
+                    batch_size=config.sync_options.batch_size,
+                )
+
+                # Run synchronization
+                sync_result = await sync_engine.sync_all_tables(
+                    dry_run=dry_run,
+                    table_filter=table_list,
+                )
+
+                # Display summary
+                if dry_run:
+                    reporter.log_info("Dry run completed successfully")
+                else:
+                    reporter.log_info("Synchronization completed successfully")
+
+                # Display detailed results
+                summary_data = []
+                for table_result in sync_result.table_results:
+                    summary_data.append(
+                        {
+                            "table": table_result.table_name.split(".")[
+                                -1
+                            ],  # Remove schema prefix
+                            "created": table_result.records_created,
+                            "updated": table_result.records_updated,
+                            "failed": table_result.records_failed,
+                            "duration": f"{table_result.duration_seconds:.2f}s",
+                        }
+                    )
+
+                if summary_data:
+                    reporter.display_summary_table("Sync Results", summary_data)
+
+                # Display overall statistics
+                total_duration = sync_result.total_duration_seconds
+                reporter.log_info(f"Total operation time: {total_duration:.2f} seconds")
+                reporter.log_info(
+                    f"Tables processed: {sync_result.successful_tables}/{sync_result.total_tables}"
+                )
+                reporter.log_info(
+                    f"Records created: {sync_result.total_records_created}"
+                )
+                reporter.log_info(
+                    f"Records updated: {sync_result.total_records_updated}"
+                )
+
+                if sync_result.errors:
+                    reporter.report_warning(
+                        f"Encountered {len(sync_result.errors)} errors during sync"
+                    )
+                    for error in sync_result.errors:
+                        reporter.log_debug(f"Error: {error}")
+
+            finally:
+                await engine.dispose()
+
+        except InventoryCLIError as e:
+            # Handle our custom errors with detailed formatting
+            reporter.report_error(e.get_formatted_message())
+            raise typer.Exit(1)
+        except Exception as e:
+            reporter.report_error(f"Sync operation failed: {e}")
+            raise typer.Exit(1)
+
+    # Run the async sync operation
+    asyncio.run(run_sync())
 
 
 # Config subcommand group
-config_app = typer.Typer(help="Configuration management commands")
+config_app = typer.Typer(
+    help="Configuration management commands\n\n"
+    "These commands help you manage and validate your inventory configuration files. "
+    "Configuration files define backend connections, database settings, table mappings, "
+    "and synchronization options."
+)
 app.add_typer(config_app, name="config")
 
 
@@ -190,7 +319,16 @@ def config_show(
         dir_okay=False,
     ),
 ):
-    """Display current configuration."""
+    """Display current configuration in a formatted view.
+
+    This command loads and displays your inventory configuration file
+    in a human-readable format, showing backend settings, database
+    configuration, table mappings, and sync options.
+
+    Examples:
+      mbx-inventory config show
+      mbx-inventory config show --config production_config.json
+    """
     try:
         config = InventoryConfig.load_from_file(config_file)
 
@@ -243,7 +381,23 @@ def config_validate(
         False, "--verbose", "-v", help="Enable verbose logging"
     ),
 ):
-    """Validate configuration file."""
+    """Validate configuration file structure and settings.
+
+    This command validates your configuration file syntax, structure,
+    and environment variable availability. Use --test-connectivity to
+    also test actual connections to backend and database services.
+
+    Validation includes:
+    - JSON syntax validation
+    - Required field presence
+    - Backend type validation
+    - Environment variable availability
+    - Optional connectivity testing
+
+    Examples:
+      mbx-inventory config validate
+      mbx-inventory config validate --test-connectivity --verbose
+    """
     # Initialize progress reporter
     reporter = ProgressReporter(verbose=verbose, console=console)
 
@@ -289,8 +443,9 @@ def config_validate(
 
         reporter.log_info("Configuration validation complete")
 
-    except ConfigurationError as e:
-        reporter.report_error(f"Configuration Error: {e}")
+    except InventoryCLIError as e:
+        # Handle our custom errors with detailed formatting
+        reporter.report_error(e.get_formatted_message())
         raise typer.Exit(1)
     except Exception as e:
         reporter.report_error(f"Unexpected error: {e}")

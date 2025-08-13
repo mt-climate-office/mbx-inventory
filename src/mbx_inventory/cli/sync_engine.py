@@ -16,6 +16,18 @@ from mbx_db.sync import sync_table_data, SyncResult, UpsertResult
 
 from ..inventory import Inventory
 from .progress import ProgressReporter
+from .exceptions import (
+    SyncOperationError,
+    DataValidationError,
+    ErrorContext,
+    create_sync_error,
+    create_database_error,
+)
+from .retry import RetryableOperation, SYNC_RETRY_CONFIG
+from .transaction_manager import (
+    SyncTransactionManager,
+    with_sync_transaction,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -31,13 +43,14 @@ class TableSyncConfig:
     conflict_columns: Optional[List[str]] = None  # Columns for conflict resolution
 
 
-class SyncEngineError(Exception):
+# Keep backward compatibility aliases
+class SyncEngineError(SyncOperationError):
     """Base exception for sync engine operations."""
 
     pass
 
 
-class TableSyncError(SyncEngineError):
+class TableSyncError(SyncOperationError):
     """Exception for table-specific sync errors."""
 
     pass
@@ -61,49 +74,49 @@ class SyncEngine:
             table_name="elements",
             get_data_method="get_elements",
             dependencies=[],
-            conflict_columns=["element_id"],
+            # conflict_columns=["element_id"],
         ),
         "component_models": TableSyncConfig(
             table_name="component_models",
             get_data_method="get_component_models",
             dependencies=[],
-            conflict_columns=["component_model_id"],
+            conflict_columns=["model"],
         ),
         "stations": TableSyncConfig(
             table_name="stations",
             get_data_method="get_stations",
             dependencies=["elements"],
-            conflict_columns=["station_id"],
+            # conflict_columns=["station_id"],
         ),
         "inventory": TableSyncConfig(
             table_name="inventory",
             get_data_method="get_inventory",
             dependencies=["component_models"],
-            conflict_columns=["inventory_id"],
+            # conflict_columns=["inventory_id"],
         ),
         "deployments": TableSyncConfig(
             table_name="deployments",
             get_data_method="get_deployments",
             dependencies=["stations", "inventory"],
-            conflict_columns=["deployment_id"],
+            # conflict_columns=["deployment_id"],
         ),
         "component_elements": TableSyncConfig(
             table_name="component_elements",
             get_data_method="get_component_elements",
             dependencies=["component_models", "elements"],
-            conflict_columns=["component_model_id", "element_id"],
+            # conflict_columns=["component_model_id", "element_id"],
         ),
         "request_schemas": TableSyncConfig(
             table_name="request_schemas",
             get_data_method="get_request_schemas",
             dependencies=["elements"],
-            conflict_columns=["request_schema_id"],
+            # conflict_columns=["request_schema_id"],
         ),
         "response_schemas": TableSyncConfig(
             table_name="response_schemas",
             get_data_method="get_response_schemas",
             dependencies=["elements"],
-            conflict_columns=["response_schema_id"],
+            # conflict_columns=["response_schema_id"],
         ),
     }
 
@@ -114,6 +127,7 @@ class SyncEngine:
         progress_reporter: ProgressReporter,
         schema: str = "network",
         batch_size: int = 100,
+        use_transactions: bool = True,
     ):
         """
         Initialize the SyncEngine.
@@ -124,15 +138,28 @@ class SyncEngine:
             progress_reporter: Progress reporter for user feedback
             schema: Database schema name (default: "network")
             batch_size: Batch size for processing records
+            use_transactions: Whether to use transaction management
         """
         self.inventory = inventory
         self.db_engine = db_engine
         self.progress_reporter = progress_reporter
         self.schema = schema
         self.batch_size = batch_size
+        self.use_transactions = use_transactions
+
+        # Initialize transaction manager if enabled
+        if self.use_transactions:
+            self.transaction_manager = SyncTransactionManager(
+                engine=db_engine,
+                progress_reporter=progress_reporter,
+                schema=schema,
+            )
+        else:
+            self.transaction_manager = None
 
         logger.debug(
-            f"SyncEngine initialized with schema '{schema}' and batch size {batch_size}"
+            f"SyncEngine initialized with schema '{schema}', batch size {batch_size}, "
+            f"transactions {'enabled' if use_transactions else 'disabled'}"
         )
 
     async def sync_all_tables(
@@ -149,11 +176,20 @@ class SyncEngine:
             SyncResult with comprehensive operation statistics
 
         Raises:
-            SyncEngineError: If sync operation fails
+            SyncOperationError: If sync operation fails
         """
         logger.info(f"Starting {'dry run' if dry_run else 'sync'} for all tables")
 
         sync_result = SyncResult(started_at=datetime.now())
+
+        context = ErrorContext(
+            operation="sync_all_tables",
+            additional_data={
+                "dry_run": dry_run,
+                "table_filter": table_filter,
+                "schema": self.schema,
+            },
+        )
 
         try:
             # Determine which tables to sync
@@ -172,11 +208,32 @@ class SyncEngine:
                 total_items=len(ordered_tables),
             )
 
-            # Sync each table
+            successful_tables = 0
+            total_records_processed = 0
+
+            # Sync each table with error recovery
             for table_name in ordered_tables:
+                table_context = ErrorContext(
+                    operation="sync_table",
+                    table_name=table_name,
+                    additional_data={"dry_run": dry_run},
+                )
+
                 try:
-                    table_result = await self.sync_table(table_name, dry_run)
+                    # Use retryable operation for individual table sync
+                    retry_op = RetryableOperation(
+                        f"sync_table_{table_name}",
+                        SYNC_RETRY_CONFIG,
+                        self.progress_reporter,
+                    )
+
+                    table_result = await retry_op.execute_async(
+                        lambda: self.sync_table(table_name, dry_run)
+                    )
+
                     sync_result.add_table_result(table_result)
+                    successful_tables += 1
+                    total_records_processed += table_result.records_processed or 0
 
                     self.progress_reporter.update_progress(
                         1,
@@ -197,19 +254,38 @@ class SyncEngine:
                     )
                     sync_result.add_table_result(failed_result)
 
-                    self.progress_reporter.report_error(
-                        error_msg, context={"table": table_name}
+                    # Create detailed sync error
+                    sync_error = create_sync_error(
+                        f"Table sync failed: {error_msg}",
+                        operation="sync_table",
+                        table_name=table_name,
+                        partial_success=successful_tables > 0,
+                        context=table_context,
+                        cause=e,
                     )
 
-                    # Continue with other tables
+                    self.progress_reporter.report_error(
+                        sync_error.get_formatted_message(),
+                        context={
+                            "table": table_name,
+                            "error_code": sync_error.error_code,
+                        },
+                    )
+
+                    # Continue with other tables for partial success
                     continue
 
             sync_result.completed_at = datetime.now()
 
+            # Determine if operation was successful
+            partial_success = successful_tables > 0 and successful_tables < len(
+                ordered_tables
+            )
+
             # Complete progress reporting
             summary = (
                 f"{'Dry run completed' if dry_run else 'Sync completed'}: "
-                f"{sync_result.successful_tables}/{sync_result.total_tables} tables successful, "
+                f"{successful_tables}/{len(ordered_tables)} tables successful, "
                 f"{sync_result.total_records_created} created, "
                 f"{sync_result.total_records_updated} updated"
             )
@@ -217,10 +293,25 @@ class SyncEngine:
             self.progress_reporter.complete_operation(summary)
 
             logger.info(
-                f"Sync operation completed with {sync_result.successful_tables} successful tables"
+                f"Sync operation completed with {successful_tables} successful tables"
             )
+
+            # If no tables succeeded, raise an error
+            if successful_tables == 0:
+                raise create_sync_error(
+                    "All table synchronizations failed",
+                    operation="sync_all_tables",
+                    records_processed=total_records_processed,
+                    records_failed=len(ordered_tables),
+                    partial_success=False,
+                    context=context,
+                )
+
             return sync_result
 
+        except SyncOperationError:
+            # Re-raise sync operation errors
+            raise
         except Exception as e:
             error_msg = f"Sync operation failed: {str(e)}"
             logger.error(error_msg)
@@ -228,7 +319,12 @@ class SyncEngine:
             sync_result.completed_at = datetime.now()
 
             self.progress_reporter.report_error(error_msg)
-            raise SyncEngineError(error_msg) from e
+            raise create_sync_error(
+                error_msg,
+                operation="sync_all_tables",
+                context=context,
+                cause=e,
+            )
 
     async def sync_table(self, table_name: str, dry_run: bool = False) -> UpsertResult:
         """
@@ -242,19 +338,38 @@ class SyncEngine:
             UpsertResult with table-specific operation statistics
 
         Raises:
-            TableSyncError: If table sync fails
+            SyncOperationError: If table sync fails
         """
         logger.debug(
             f"Starting {'dry run' if dry_run else 'sync'} for table {table_name}"
         )
 
+        context = ErrorContext(
+            operation="sync_table",
+            table_name=table_name,
+            additional_data={"dry_run": dry_run, "schema": self.schema},
+        )
+
         if table_name not in self.TABLE_CONFIGS:
-            raise TableSyncError(f"Unknown table: {table_name}")
+            raise create_sync_error(
+                f"Unknown table: {table_name}",
+                operation="sync_table",
+                table_name=table_name,
+                context=context,
+            )
 
         config = self.TABLE_CONFIGS[table_name]
 
         try:
             # Get data from inventory using the configured method
+            if not hasattr(self.inventory, config.get_data_method):
+                raise create_sync_error(
+                    f"Inventory method '{config.get_data_method}' not found for table {table_name}",
+                    operation="sync_table",
+                    table_name=table_name,
+                    context=context,
+                )
+
             get_data_method = getattr(self.inventory, config.get_data_method)
 
             self.progress_reporter.log_debug(
@@ -262,8 +377,17 @@ class SyncEngine:
                 context={"method": config.get_data_method},
             )
 
-            # Retrieve and transform data
-            data = get_data_method()
+            # Retrieve and transform data with error handling
+            try:
+                data = get_data_method()
+            except Exception as e:
+                raise create_sync_error(
+                    f"Failed to retrieve data for {table_name}: {e}",
+                    operation="data_retrieval",
+                    table_name=table_name,
+                    context=context,
+                    cause=e,
+                )
 
             if not data:
                 logger.info(f"No data found for table {table_name}")
@@ -272,6 +396,15 @@ class SyncEngine:
                 )
 
             logger.info(f"Retrieved {len(data)} records for {table_name}")
+            context.record_count = len(data)
+
+            # Validate data structure
+            if not isinstance(data, list):
+                raise DataValidationError(
+                    f"Expected list of records for {table_name}, got {type(data)}",
+                    table_name=table_name,
+                    context=context,
+                )
 
             # Process data in batches if needed
             if len(data) > self.batch_size:
@@ -281,10 +414,19 @@ class SyncEngine:
             else:
                 return await self._sync_table_batch(table_name, data, config, dry_run)
 
+        except (SyncOperationError, DataValidationError):
+            # Re-raise our custom errors
+            raise
         except Exception as e:
             error_msg = f"Failed to sync table {table_name}: {str(e)}"
             logger.error(error_msg)
-            raise TableSyncError(error_msg) from e
+            raise create_sync_error(
+                error_msg,
+                operation="sync_table",
+                table_name=table_name,
+                context=context,
+                cause=e,
+            )
 
     async def _sync_table_in_batches(
         self,
@@ -341,6 +483,13 @@ class SyncEngine:
         dry_run: bool,
     ) -> UpsertResult:
         """Sync a single batch of table data."""
+        context = ErrorContext(
+            operation="sync_table_batch",
+            table_name=table_name,
+            record_count=len(data),
+            additional_data={"dry_run": dry_run},
+        )
+
         try:
             result = await sync_table_data(
                 engine=self.db_engine,
@@ -367,6 +516,21 @@ class SyncEngine:
             error_msg = f"Database sync failed for {table_name}: {str(e)}"
             logger.error(error_msg)
 
+            # Create detailed database error
+            db_error = create_database_error(
+                error_msg,
+                operation="sync_table_batch",
+                table_name=table_name,
+                context=context,
+                cause=e,
+            )
+
+            # Log the detailed error
+            self.progress_reporter.report_error(
+                db_error.get_formatted_message(),
+                context={"error_code": db_error.error_code},
+            )
+
             # Return a failed result
             return UpsertResult(
                 table_name=f"{self.schema}.{table_name}",
@@ -376,18 +540,37 @@ class SyncEngine:
             )
 
     def _get_tables_to_sync(self, table_filter: Optional[List[str]]) -> List[str]:
-        """Determine which tables to sync based on filter."""
+        """Determine which tables to sync based on filter and configuration."""
+        # Get tables that are configured in the inventory
+        configured_tables = self._get_configured_tables()
+
         if table_filter:
-            # Validate that all requested tables exist
-            unknown_tables = [t for t in table_filter if t not in self.TABLE_CONFIGS]
+            # Validate that all requested tables exist in configuration
+            unknown_tables = [t for t in table_filter if t not in configured_tables]
             if unknown_tables:
-                raise SyncEngineError(f"Unknown tables: {unknown_tables}")
+                context = ErrorContext(
+                    operation="validate_table_filter",
+                    additional_data={
+                        "unknown_tables": unknown_tables,
+                        "configured_tables": configured_tables,
+                        "available_tables": list(self.TABLE_CONFIGS.keys()),
+                    },
+                )
+                raise create_sync_error(
+                    f"Tables not configured: {unknown_tables}. Configured tables: {configured_tables}",
+                    operation="validate_table_filter",
+                    context=context,
+                )
             return table_filter
         else:
-            return list(self.TABLE_CONFIGS.keys())
+            return configured_tables
 
     def _order_tables_by_dependencies(self, tables: List[str]) -> List[str]:
         """Order tables based on their dependencies using topological sort."""
+        context = ErrorContext(
+            operation="order_tables_by_dependencies", additional_data={"tables": tables}
+        )
+
         # Initialize graph and in-degree for all tables
         graph = {table: [] for table in tables}
         in_degree = {table: 0 for table in tables}
@@ -422,12 +605,218 @@ class SyncEngine:
         # Check for circular dependencies
         if len(ordered) != len(tables):
             remaining = [t for t in tables if t not in ordered]
-            raise SyncEngineError(
-                f"Circular dependency detected in tables: {remaining}"
+            raise create_sync_error(
+                f"Circular dependency detected in tables: {remaining}",
+                operation="order_tables_by_dependencies",
+                context=context,
             )
 
         logger.debug(f"Table sync order: {ordered}")
         return ordered
+
+    async def sync_all_tables_with_transaction(
+        self,
+        dry_run: bool = False,
+        table_filter: Optional[List[str]] = None,
+        transaction_id: Optional[str] = None,
+    ) -> SyncResult:
+        """
+        Sync all configured tables within a single database transaction.
+
+        This method provides ACID guarantees - either all tables sync successfully
+        or all changes are rolled back.
+
+        Args:
+            dry_run: If True, preview changes without executing them
+            table_filter: Optional list of specific tables to sync
+            transaction_id: Optional transaction ID (auto-generated if None)
+
+        Returns:
+            SyncResult with comprehensive operation statistics
+
+        Raises:
+            SyncOperationError: If sync operation fails
+        """
+        if not self.use_transactions or not self.transaction_manager:
+            logger.warning(
+                "Transaction management is disabled, falling back to regular sync"
+            )
+            return await self.sync_all_tables(dry_run, table_filter)
+
+        if transaction_id is None:
+            transaction_id = f"sync_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        logger.info(f"Starting transactional sync with ID: {transaction_id}")
+
+        context = ErrorContext(
+            operation="sync_all_tables_with_transaction",
+            additional_data={
+                "transaction_id": transaction_id,
+                "dry_run": dry_run,
+                "table_filter": table_filter,
+                "schema": self.schema,
+            },
+        )
+
+        try:
+            # Execute sync within a transaction
+            result = await with_sync_transaction(
+                engine=self.db_engine,
+                transaction_id=transaction_id,
+                sync_operations=self._execute_sync_operations,
+                progress_reporter=self.progress_reporter,
+                isolation_level="READ_COMMITTED",
+            )
+
+            return result
+
+        except Exception as e:
+            error_msg = f"Transactional sync failed: {str(e)}"
+            logger.error(error_msg)
+
+            raise create_sync_error(
+                error_msg,
+                operation="sync_all_tables_with_transaction",
+                context=context,
+                cause=e,
+            )
+
+    async def _execute_sync_operations(
+        self,
+        tx_context,
+        tx_manager: SyncTransactionManager,
+        dry_run: bool = False,
+        table_filter: Optional[List[str]] = None,
+    ) -> SyncResult:
+        """
+        Execute sync operations within a transaction context.
+
+        Args:
+            tx_context: Transaction context from transaction manager
+            tx_manager: Transaction manager instance
+            dry_run: Whether this is a dry run
+            table_filter: Optional table filter
+
+        Returns:
+            SyncResult with operation statistics
+        """
+        sync_result = SyncResult(started_at=datetime.now())
+
+        try:
+            # Determine which tables to sync
+            tables_to_sync = self._get_tables_to_sync(table_filter)
+
+            # Order tables by dependencies
+            ordered_tables = self._order_tables_by_dependencies(tables_to_sync)
+
+            logger.info(
+                f"Will sync {len(ordered_tables)} tables in transaction: {ordered_tables}"
+            )
+
+            # Start overall progress tracking
+            self.progress_reporter.start_operation(
+                f"{'Dry run' if dry_run else 'Syncing'} {len(ordered_tables)} tables (transactional)",
+                total_items=len(ordered_tables),
+            )
+
+            successful_tables = 0
+
+            # Sync each table within the transaction
+            for table_name in ordered_tables:
+                try:
+                    # Create a sync operation for this table
+                    async def table_sync_operation():
+                        return await self.sync_table(table_name, dry_run)
+
+                    # Execute with transaction support
+                    table_result = await tx_manager.execute_table_sync_with_transaction(
+                        transaction_id=tx_context.transaction_id,
+                        table_name=table_name,
+                        sync_operation=table_sync_operation,
+                        create_savepoint=True,
+                    )
+
+                    sync_result.add_table_result(table_result)
+                    successful_tables += 1
+
+                    self.progress_reporter.update_progress(
+                        1,
+                        f"Completed {table_name}: {table_result.records_created} created, "
+                        f"{table_result.records_updated} updated",
+                    )
+
+                except Exception as e:
+                    error_msg = (
+                        f"Failed to sync table {table_name} in transaction: {str(e)}"
+                    )
+                    logger.error(error_msg)
+                    sync_result.errors.append(error_msg)
+
+                    # Create a failed result for this table
+                    failed_result = UpsertResult(
+                        table_name=table_name,
+                        records_failed=1,
+                        errors=[error_msg],
+                    )
+                    sync_result.add_table_result(failed_result)
+
+                    # In transactional mode, we might want to fail fast
+                    # or continue based on configuration
+                    self.progress_reporter.report_error(
+                        f"Table sync failed in transaction: {error_msg}",
+                        context={
+                            "table": table_name,
+                            "transaction_id": tx_context.transaction_id,
+                        },
+                    )
+
+                    # For now, continue with other tables
+                    # The transaction will be rolled back if any critical error occurs
+                    continue
+
+            sync_result.completed_at = datetime.now()
+
+            # Complete progress reporting
+            summary = (
+                f"{'Dry run completed' if dry_run else 'Transactional sync completed'}: "
+                f"{successful_tables}/{len(ordered_tables)} tables successful, "
+                f"{sync_result.total_records_created} created, "
+                f"{sync_result.total_records_updated} updated"
+            )
+
+            self.progress_reporter.complete_operation(summary)
+
+            logger.info(
+                f"Transactional sync completed with {successful_tables} successful tables"
+            )
+
+            return sync_result
+
+        except Exception as e:
+            sync_result.completed_at = datetime.now()
+            sync_result.errors.append(str(e))
+
+            logger.error(f"Error in transactional sync operations: {e}")
+            raise
+
+    def _get_configured_tables(self) -> List[str]:
+        """Get list of tables that are configured in the inventory."""
+        # Check if inventory has table_configs (new format)
+        if hasattr(self.inventory, "table_configs") and self.inventory.table_configs:
+            # Return only enabled tables from the new configuration
+            return [
+                table_name
+                for table_name, config in self.inventory.table_configs.items()
+                if hasattr(config, "enabled") and config.enabled
+            ]
+
+        # Check if inventory has table_mappings (legacy format)
+        if hasattr(self.inventory, "table_mapper") and self.inventory.table_mapper:
+            # Return tables that have mappings
+            return list(self.inventory.table_mapper.get_all_mappings().keys())
+
+        # Fallback to all available tables
+        return list(self.TABLE_CONFIGS.keys())
 
     def get_available_tables(self) -> List[str]:
         """Get list of available tables for synchronization."""
@@ -436,7 +825,18 @@ class SyncEngine:
     def get_table_dependencies(self, table_name: str) -> List[str]:
         """Get dependencies for a specific table."""
         if table_name not in self.TABLE_CONFIGS:
-            raise SyncEngineError(f"Unknown table: {table_name}")
+            context = ErrorContext(
+                operation="get_table_dependencies",
+                additional_data={
+                    "table_name": table_name,
+                    "available_tables": list(self.TABLE_CONFIGS.keys()),
+                },
+            )
+            raise create_sync_error(
+                f"Unknown table: {table_name}",
+                operation="get_table_dependencies",
+                context=context,
+            )
         return self.TABLE_CONFIGS[table_name].dependencies.copy()
 
     def validate_table_filter(self, table_filter: List[str]) -> bool:

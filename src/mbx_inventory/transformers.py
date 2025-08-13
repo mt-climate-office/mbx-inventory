@@ -52,6 +52,11 @@ class BaseTransformer:
     FIELD_TYPES: Dict[str, Type] = {}  # schema_field -> target_type
 
     @classmethod
+    def override_field_mappings(cls, field_mappings: dict[str, str]) -> None:
+        cls.FIELD_MAPPINGS = cls.FIELD_MAPPINGS.copy()
+        cls.FIELD_MAPPINGS.update(field_mappings)
+
+    @classmethod
     def transform(cls, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Transform raw backend data to network schema format.
 
@@ -73,6 +78,44 @@ class BaseTransformer:
         for record in raw_data:
             try:
                 transformed_record = cls._transform_record(record)
+                transformed_data.append(transformed_record)
+            except Exception as e:
+                logger.error(
+                    f"Failed to transform record {record.get('id', 'unknown')}: {e}"
+                )
+                raise TransformationError(f"Failed to transform record: {e}") from e
+
+        return transformed_data
+
+    @classmethod
+    def transform_with_field_mappings(
+        cls, raw_data: List[Dict[str, Any]], field_mappings: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """Transform raw backend data using custom field mappings.
+
+        Args:
+            raw_data: List of dictionaries from inventory backend
+            field_mappings: Custom field mappings {schema_field: backend_field}
+
+        Returns:
+            List of dictionaries formatted for network schema
+
+        Raises:
+            ValidationError: If required fields are missing
+            TransformationError: If data transformation fails
+        """
+        if not raw_data:
+            return []
+
+        # Create a temporary class with custom field mappings
+        class CustomTransformer(cls):
+            FIELD_MAPPINGS = {**cls.FIELD_MAPPINGS, **field_mappings}
+
+        transformed_data = []
+
+        for record in raw_data:
+            try:
+                transformed_record = CustomTransformer._transform_record(record)
                 transformed_data.append(transformed_record)
             except Exception as e:
                 logger.error(
@@ -230,7 +273,7 @@ class BaseTransformer:
                 return BaseTransformer._convert_to_date(value)
 
             # Handle string conversion
-            if target_type == str:
+            if isinstance(target_type, str):
                 return str(value)
 
             # Handle numeric conversions
@@ -322,7 +365,16 @@ class StationsTransformer(BaseTransformer):
     OPTIONAL_FIELDS = ["date_installed", "extra_data"]
 
     # Valid status values as defined in the database constraint
-    VALID_STATUSES = ["pending", "active", "decommissioned", "inactive"]
+    VALID_STATUSES = [
+        "pending",
+        "active",
+        "decommissioned",
+        "inactive",
+        "contracted",
+        "ground",
+        "structures",
+        "candidate",
+    ]
 
     # Default field mappings - can be overridden for specific backends
     FIELD_MAPPINGS = {
@@ -365,7 +417,7 @@ class StationsTransformer(BaseTransformer):
 
         # Additional validation for status field
         if field_name == "status" and converted_value is not None:
-            if converted_value not in cls.VALID_STATUSES:
+            if not any(converted_value.startswith(x) for x in cls.VALID_STATUSES):
                 raise ValidationError(
                     f"Invalid status value '{converted_value}'. "
                     f"Must be one of: {', '.join(cls.VALID_STATUSES)}"

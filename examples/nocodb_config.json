@@ -1,0 +1,29 @@
+{
+  "backend": {
+    "type": "nocodb",
+    "config": {
+      "api_key": "${NOCODB_API_KEY}",
+      "base_url": "${NOCODB_BASE_URL}",
+      "project_id": "${NOCODB_PROJECT_ID}"
+    }
+  },
+  "database": {
+    "host": "${POSTGRES_HOST}",
+    "port": 5432,
+    "database": "${POSTGRES_DB}",
+    "username": "${POSTGRES_USER}",
+    "password": "${POSTGRES_PASSWORD}"
+  },
+  "table_mappings": {
+    "elements": "elements",
+    "stations": "stations",
+    "component_models": "component_models",
+    "inventory": "inventory",
+    "deployments": "deployments"
+  },
+  "sync_options": {
+    "batch_size": 75,
+    "timeout": 45,
+    "retry_attempts": 3
+  }
+}

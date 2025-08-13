@@ -1,4 +1,4 @@
-from typing import Protocol, Dict, Optional
+from typing import Protocol, Dict, Optional, Any
 from enum import Enum
 
 from .network_schema_mixin import NetworkSchemaMixin
@@ -34,6 +34,7 @@ class Inventory(NetworkSchemaMixin):
         self,
         backend: InventoryBackend,
         table_mappings: Optional[Dict[str, str]] = None,
+        table_configs: Optional[Dict[str, Any]] = None,
         backend_type: str = "airtable",
     ):
         """Initialize the Inventory instance.
@@ -41,12 +42,17 @@ class Inventory(NetworkSchemaMixin):
         Args:
             backend: The inventory backend implementation
             table_mappings: Optional custom table name mappings
+            table_configs: Optional per-table configuration with field mappings
             backend_type: Type of backend ("airtable", "baserow", "nocodb")
         """
         self.backend = backend
 
         # Initialize the NetworkSchemaMixin
-        super().__init__(table_mappings=table_mappings, backend_type=backend_type)
+        super().__init__(
+            table_mappings=table_mappings,
+            table_configs=table_configs,
+            backend_type=backend_type,
+        )
 
     def validate(self) -> bool:
         """Validate the backend connection.

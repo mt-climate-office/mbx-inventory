@@ -42,6 +42,7 @@ class NetworkSchemaMixin:
         self,
         *args,
         table_mappings: Optional[Dict[str, str]] = None,
+        table_configs: Optional[Dict[str, Any]] = None,
         backend_type: str = "airtable",
         **kwargs,
     ):
@@ -50,10 +51,14 @@ class NetworkSchemaMixin:
         Args:
             *args: Arguments passed to parent class
             table_mappings: Optional custom table name mappings
+            table_configs: Optional per-table configuration with field mappings
             backend_type: Type of backend ("airtable", "baserow", "nocodb")
             **kwargs: Keyword arguments passed to parent class
         """
         super().__init__(*args, **kwargs)
+
+        # Store table configs for field mapping
+        self.table_configs = table_configs or {}
 
         # Initialize table name mapper
         self.table_mapper = TableNameMapper(
@@ -97,13 +102,14 @@ class NetworkSchemaMixin:
             raise BackendError(f"Failed to retrieve data from backend: {e}") from e
 
     def _transform_data(
-        self, transformer_class, raw_data: List[Dict[str, Any]]
+        self, transformer_class, raw_data: List[Dict[str, Any]], table_name: str
     ) -> List[Dict[str, Any]]:
         """Transform raw backend data using the specified transformer.
 
         Args:
             transformer_class: The transformer class to use
             raw_data: Raw data from the backend
+            table_name: Name of the table being transformed
 
         Returns:
             Transformed data ready for database insertion
@@ -112,6 +118,13 @@ class NetworkSchemaMixin:
             TransformationError: If data transformation fails
         """
         try:
+            # Check if we have custom field mappings for this table
+            if table_name in self.table_configs and hasattr(
+                self.table_configs[table_name], "field_mappings"
+            ):
+                new_mappings = self.table_configs[table_name].field_mappings
+                transformer_class.override_field_mappings(field_mappings=new_mappings)
+
             return transformer_class.transform(raw_data)
         except Exception as e:
             logger.error(
@@ -197,264 +210,95 @@ class NetworkSchemaMixin:
 
     # Network Schema Methods
 
-    def get_elements(
-        self, filters: Optional[Dict[str, Any]] = None
+    # Mapping of table names to their transformers
+    _TRANSFORMER_MAP = {
+        "elements": ElementsTransformer,
+        "component_models": ComponentModelsTransformer,
+        "stations": StationsTransformer,
+        "inventory": InventoryTransformer,
+        "deployments": DeploymentsTransformer,
+        "component_elements": ComponentElementsTransformer,
+        "request_schemas": RequestSchemasTransformer,
+        "response_schemas": ResponseSchemasTransformer,
+    }
+
+    def _get_network_data(
+        self, table_name: str, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve elements data from inventory backend.
+        """Generic method to retrieve network schema data from inventory backend.
 
         Args:
+            table_name: Name of the table to retrieve data from
             filters: Optional filters to apply to the data
 
         Returns:
-            List of elements data formatted for network schema
+            List of data formatted for network schema
 
         Raises:
             BackendError: If backend operation fails
             TransformationError: If data transformation fails
+            ValueError: If table_name is not supported
         """
+        if table_name not in self._TRANSFORMER_MAP:
+            raise ValueError(f"Unsupported table name: {table_name}")
+
         try:
             # Get raw data from backend
-            raw_data = self._get_backend_data("elements")
+            raw_data = self._get_backend_data(table_name)
 
-            # Transform data using ElementsTransformer
-            transformed_data = self._transform_data(ElementsTransformer, raw_data)
+            # Transform data using appropriate transformer
+            transformer_class = self._TRANSFORMER_MAP[table_name]
+            transformed_data = self._transform_data(
+                transformer_class, raw_data, table_name
+            )
 
             # Apply filters if provided
             filtered_data = self._apply_filters(transformed_data, filters)
 
-            logger.info(f"Retrieved {len(filtered_data)} elements records")
+            logger.info(f"Retrieved {len(filtered_data)} {table_name} records")
             return filtered_data
 
         except Exception as e:
-            logger.error(f"Failed to get elements data: {e}")
+            logger.error(f"Failed to get {table_name} data: {e}")
             raise
+
+    # Convenience methods that delegate to the generic method
+    def get_elements(
+        self, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        return self._get_network_data("elements", filters)
 
     def get_component_models(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve component models data from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of component models data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("component_models")
-
-            # Transform data using ComponentModelsTransformer
-            transformed_data = self._transform_data(
-                ComponentModelsTransformer, raw_data
-            )
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} component models records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get component models data: {e}")
-            raise
+        return self._get_network_data("component_models", filters)
 
     def get_stations(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve stations data from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of stations data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("stations")
-
-            # Transform data using StationsTransformer
-            transformed_data = self._transform_data(StationsTransformer, raw_data)
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} stations records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get stations data: {e}")
-            raise
+        return self._get_network_data("stations", filters)
 
     def get_inventory(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve inventory items from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of inventory data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("inventory")
-
-            # Transform data using InventoryTransformer
-            transformed_data = self._transform_data(InventoryTransformer, raw_data)
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} inventory records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get inventory data: {e}")
-            raise
+        return self._get_network_data("inventory", filters)
 
     def get_deployments(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve deployments data from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of deployments data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("deployments")
-
-            # Transform data using DeploymentsTransformer
-            transformed_data = self._transform_data(DeploymentsTransformer, raw_data)
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} deployments records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get deployments data: {e}")
-            raise
+        return self._get_network_data("deployments", filters)
 
     def get_component_elements(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve component-element relationships from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of component-element data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("component_elements")
-
-            # Transform data using ComponentElementsTransformer
-            transformed_data = self._transform_data(
-                ComponentElementsTransformer, raw_data
-            )
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} component elements records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get component elements data: {e}")
-            raise
+        return self._get_network_data("component_elements", filters)
 
     def get_request_schemas(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve request schemas from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of request schemas data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("request_schemas")
-
-            # Transform data using RequestSchemasTransformer
-            transformed_data = self._transform_data(RequestSchemasTransformer, raw_data)
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} request schemas records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get request schemas data: {e}")
-            raise
+        return self._get_network_data("request_schemas", filters)
 
     def get_response_schemas(
         self, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Retrieve response schemas from inventory backend.
-
-        Args:
-            filters: Optional filters to apply to the data
-
-        Returns:
-            List of response schemas data formatted for network schema
-
-        Raises:
-            BackendError: If backend operation fails
-            TransformationError: If data transformation fails
-        """
-        try:
-            # Get raw data from backend
-            raw_data = self._get_backend_data("response_schemas")
-
-            # Transform data using ResponseSchemasTransformer
-            transformed_data = self._transform_data(
-                ResponseSchemasTransformer, raw_data
-            )
-
-            # Apply filters if provided
-            filtered_data = self._apply_filters(transformed_data, filters)
-
-            logger.info(f"Retrieved {len(filtered_data)} response schemas records")
-            return filtered_data
-
-        except Exception as e:
-            logger.error(f"Failed to get response schemas data: {e}")
-            raise
+        return self._get_network_data("response_schemas", filters)

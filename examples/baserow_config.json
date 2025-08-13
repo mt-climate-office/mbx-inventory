@@ -1,0 +1,29 @@
+{
+  "backend": {
+    "type": "baserow",
+    "config": {
+      "api_key": "${BASEROW_API_KEY}",
+      "base_url": "${BASEROW_BASE_URL}",
+      "database_id": "${BASEROW_DATABASE_ID}"
+    }
+  },
+  "database": {
+    "host": "${POSTGRES_HOST}",
+    "port": 5432,
+    "database": "${POSTGRES_DB}",
+    "username": "${POSTGRES_USER}",
+    "password": "${POSTGRES_PASSWORD}"
+  },
+  "table_mappings": {
+    "elements": "Elements",
+    "stations": "Stations",
+    "component_models": "Component Models",
+    "inventory": "Inventory",
+    "deployments": "Deployments"
+  },
+  "sync_options": {
+    "batch_size": 50,
+    "timeout": 60,
+    "retry_attempts": 2
+  }
+}

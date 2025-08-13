@@ -18,7 +18,9 @@ class AirtableBackend:
         """Retrieve records from a specified table."""
         table_obj = self.base.table(table)
         records = table_obj.all()
-        return [{"id": record["id"], **record["fields"]} for record in records]
+        
+        recs = [{"inventory_id": record["id"], **record["fields"]} for record in records]
+        return [{k: v[0] if isinstance(v, list) and len(v) == 1 else v for k, v in x.items()} for x in recs]
 
     def create_records(self, table: str, records: list[dict]) -> list[dict]:
         """Create new records in a specified table."""

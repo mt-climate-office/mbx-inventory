@@ -11,24 +11,13 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
 from ..backends import AirtableBackend, BaserowBackend, NocoDBBackend
 from ..inventory import Inventory
-
-
-class ConfigurationError(Exception):
-    """Base exception for configuration-related errors."""
-
-    pass
-
-
-class BackendConnectionError(ConfigurationError):
-    """Exception raised when backend connection fails."""
-
-    pass
-
-
-class DatabaseConnectionError(ConfigurationError):
-    """Exception raised when database connection fails."""
-
-    pass
+from .exceptions import (
+    ErrorContext,
+    create_config_error,
+    create_backend_error,
+    create_database_error,
+)
+from .retry import retry_database_operation
 
 
 class BackendConfig(BaseModel):
@@ -122,6 +111,16 @@ class SyncOptions(BaseModel):
     )
 
 
+class TableConfig(BaseModel):
+    """Configuration for a specific table sync."""
+
+    backend_table_name: str = Field(..., description="Name of the table in the backend")
+    field_mappings: Optional[Dict[str, str]] = Field(
+        default=None, description="Mapping of schema field names to backend field names"
+    )
+    enabled: bool = Field(default=True, description="Whether to sync this table")
+
+
 class InventoryConfig(BaseModel):
     """Main configuration for inventory CLI."""
 
@@ -129,7 +128,11 @@ class InventoryConfig(BaseModel):
     database: DatabaseConfig = Field(..., description="Database configuration")
     table_mappings: Optional[Dict[str, str]] = Field(
         default=None,
-        description="Mapping of internal table names to backend table names",
+        description="Mapping of internal table names to backend table names (deprecated - use tables config)",
+    )
+    tables: Optional[Dict[str, TableConfig]] = Field(
+        default=None,
+        description="Per-table configuration with backend names and field mappings",
     )
     sync_options: SyncOptions = Field(
         default_factory=SyncOptions, description="Synchronization options"
@@ -140,9 +143,18 @@ class InventoryConfig(BaseModel):
         """Load configuration from JSON file with environment variable substitution."""
         logger = logging.getLogger("mbx_inventory")
 
+        context = ErrorContext(
+            operation="load_configuration",
+            additional_data={"config_file": str(config_path)},
+        )
+
         if not config_path.exists():
             logger.error(f"Configuration file not found: {config_path}")
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+            raise create_config_error(
+                f"Configuration file not found: {config_path}",
+                config_file=str(config_path),
+                context=context,
+            )
 
         try:
             logger.debug(f"Loading configuration from {config_path}")
@@ -160,10 +172,35 @@ class InventoryConfig(BaseModel):
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in configuration file: {e}")
-            raise ValueError(f"Invalid JSON in configuration file: {e}")
+            raise create_config_error(
+                f"Invalid JSON in configuration file: {e}",
+                config_file=str(config_path),
+                context=context,
+            )
+        except ValueError as e:
+            if "Environment variable" in str(e):
+                # Extract missing environment variable
+                missing_var = str(e).split("'")[1] if "'" in str(e) else "unknown"
+                raise create_config_error(
+                    f"Missing environment variable: {missing_var}",
+                    config_file=str(config_path),
+                    missing_fields=[missing_var],
+                    context=context,
+                )
+            else:
+                raise create_config_error(
+                    f"Configuration validation error: {e}",
+                    config_file=str(config_path),
+                    context=context,
+                )
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
-            raise ValueError(f"Error loading configuration: {e}")
+            raise create_config_error(
+                f"Unexpected error loading configuration: {e}",
+                config_file=str(config_path),
+                context=context,
+                cause=e,
+            )
 
     @staticmethod
     def _substitute_env_vars(data: Any) -> Any:
@@ -223,9 +260,19 @@ class InventoryConfig(BaseModel):
         except Exception:
             return False
 
+    @retry_database_operation("validate_database_connectivity")
     async def validate_database_connectivity(self) -> bool:
-        """Validate database connection asynchronously."""
+        """Validate database connection asynchronously with retry logic."""
         logger = logging.getLogger("mbx_inventory")
+
+        context = ErrorContext(
+            operation="validate_database_connectivity",
+            additional_data={
+                "host": self.database.host,
+                "port": self.database.port,
+                "database": self.database.database,
+            },
+        )
 
         try:
             logger.debug(
@@ -254,7 +301,12 @@ class InventoryConfig(BaseModel):
             return True
         except Exception as e:
             logger.error(f"Database connection failed: {e}")
-            return False
+            raise create_database_error(
+                f"Database connection failed: {e}",
+                operation="connectivity_test",
+                context=context,
+                cause=e,
+            )
 
     def get_backend_instance(self):
         """Get backend instance based on configuration."""
@@ -263,19 +315,47 @@ class InventoryConfig(BaseModel):
         backend_type = self.backend.type
         config = self.backend.config
 
+        context = ErrorContext(
+            operation="create_backend_instance",
+            additional_data={"backend_type": backend_type},
+        )
+
         logger.debug(f"Creating {backend_type} backend instance")
 
-        if backend_type == "airtable":
-            return AirtableBackend(api_key=config["api_key"], base_id=config["base_id"])
-        elif backend_type == "baserow":
-            return BaserowBackend(
-                api_key=config["api_key"], base_url=config["base_url"]
+        try:
+            if backend_type == "airtable":
+                return AirtableBackend(
+                    api_key=config["api_key"], base_id=config["base_id"]
+                )
+            elif backend_type == "baserow":
+                return BaserowBackend(
+                    api_key=config["api_key"], base_url=config["base_url"]
+                )
+            elif backend_type == "nocodb":
+                return NocoDBBackend(
+                    api_key=config["api_key"], base_url=config["base_url"]
+                )
+            else:
+                logger.error(f"Unsupported backend type: {backend_type}")
+                raise create_backend_error(
+                    f"Unsupported backend type: {backend_type}",
+                    backend_type=backend_type,
+                    context=context,
+                )
+        except KeyError as e:
+            missing_key = str(e).strip("'\"")
+            raise create_config_error(
+                f"Missing required configuration key for {backend_type}: {missing_key}",
+                missing_fields=[missing_key],
+                context=context,
             )
-        elif backend_type == "nocodb":
-            return NocoDBBackend(api_key=config["api_key"], base_url=config["base_url"])
-        else:
-            logger.error(f"Unsupported backend type: {backend_type}")
-            raise ValueError(f"Unsupported backend type: {backend_type}")
+        except Exception as e:
+            raise create_backend_error(
+                f"Failed to create {backend_type} backend: {e}",
+                backend_type=backend_type,
+                context=context,
+                cause=e,
+            )
 
     def get_inventory_instance(self) -> Inventory:
         """Get configured Inventory instance."""
@@ -284,9 +364,26 @@ class InventoryConfig(BaseModel):
         logger.debug("Creating inventory instance")
         backend = self.get_backend_instance()
 
+        # Use new tables config if available, otherwise fall back to table_mappings
+        table_mappings = None
+        table_configs = None
+
+        if self.tables:
+            # Extract table mappings and configs from new format
+            table_mappings = {}
+            table_configs = {}
+            for schema_name, config in self.tables.items():
+                if config.enabled:
+                    table_mappings[schema_name] = config.backend_table_name
+                    table_configs[schema_name] = config
+        elif self.table_mappings:
+            # Use legacy table_mappings
+            table_mappings = self.table_mappings
+
         inventory = Inventory(
             backend=backend,
-            table_mappings=self.table_mappings,
+            table_mappings=table_mappings,
+            table_configs=table_configs,
             backend_type=self.backend.type,
         )
 
