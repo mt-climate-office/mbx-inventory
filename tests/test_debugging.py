@@ -16,6 +16,7 @@ class TestEndToEndIntegration:
                 "--config",
                 "/home/cbrust/git/mesonet-in-a-box/inventory_config.json",
                 "-v",
+                "--table", "deployments"
             ],
         )
         assert True
